@@ -62,7 +62,7 @@ if (fs.existsSync(defaultAsar)) {
 console.log('[BUILD] Copying application assets into resources/app...');
 fs.mkdirSync(APP_DEST, { recursive: true });
 
-const filesToCopy = ['package.json', 'main.js', 'preload.js', 'discordRpc.js', 'favorites_backup.json'];
+const filesToCopy = ['package.json', 'main.js', 'preload.js', 'discordRpc.js', 'lastFm.js', 'favorites_backup.json'];
 for (const file of filesToCopy) {
   const src = path.join(ROOT_DIR, file);
   if (fs.existsSync(src)) {

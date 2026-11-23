@@ -7,6 +7,8 @@ const os = require('os');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const discordRpc = require('./discordRpc');
+const LastFmManager = require('./lastFm');
+let lastFm = null;
 
 let mainWindow = null;
 let cachedClientId = 'qLcgHhXgeEFFaSolTB9I71LBsqncsD93'; // Fallback default
@@ -187,12 +189,20 @@ function mapAlbumData(alb, fallbackAvatar = '') {
   };
 }
 
-async function searchSoundCloud(query, limit = 25) {
+async function searchSoundCloud(query, limit = 25, offset = 0) {
   const cid = await getSoundCloudClientId();
-  const searchUrl = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${cid}&limit=${limit}`;
+  const searchUrl = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${cid}&limit=${limit}&offset=${offset}`;
   const raw = await fetchUrl(searchUrl, { 'Referer': 'https://soundcloud.com/' });
   const data = JSON.parse(raw);
-  return (data.collection || []).map(mapTrackData);
+  const tracks = (data.collection || []).map(mapTrackData);
+  const hasMore = Boolean(data.next_href) && tracks.length >= limit;
+  return {
+    tracks,
+    hasMore,
+    total: data.total_results || 0,
+    offset,
+    limit
+  };
 }
 
 async function getArtistProfile(artistId) {
@@ -409,11 +419,12 @@ async function resolveSoundCloudStream(track) {
   };
 }
 
-async function searchYouTube(query, limit = 10) {
-  if (!isYtDlpAvailable) return [];
+async function searchYouTube(query, limit = 25, offset = 0) {
+  if (!isYtDlpAvailable) return { tracks: [], hasMore: false, total: 0, offset, limit };
+  const maxFetch = offset + limit;
   return new Promise((resolve) => {
     const proc = spawn('yt-dlp', [
-      `ytsearch${limit}:${query}`,
+      `ytsearch${maxFetch}:${query}`,
       '--flat-playlist',
       '--dump-single-json',
       '--no-warnings'
@@ -423,11 +434,11 @@ async function searchYouTube(query, limit = 10) {
     proc.stdout.on('data', chunk => { stdout += chunk; });
     proc.on('close', (code) => {
       if (code !== 0 || !stdout.trim()) {
-        return resolve([]);
+        return resolve({ tracks: [], hasMore: false, total: 0, offset, limit });
       }
       try {
         const parsed = JSON.parse(stdout);
-        const results = (parsed.entries || []).map(e => ({
+        const allResults = (parsed.entries || []).map(e => ({
           id: String(e.id),
           source: 'youtube',
           title: e.title || 'Untitled',
@@ -441,12 +452,20 @@ async function searchYouTube(query, limit = 10) {
           likesCount: 0,
           transcodings: []
         }));
-        resolve(results);
+        const sliced = allResults.slice(offset, offset + limit);
+        const hasMore = allResults.length >= maxFetch;
+        resolve({
+          tracks: sliced,
+          hasMore,
+          total: allResults.length,
+          offset,
+          limit
+        });
       } catch (err) {
-        resolve([]);
+        resolve({ tracks: [], hasMore: false, total: 0, offset, limit });
       }
     });
-    proc.on('error', () => resolve([]));
+    proc.on('error', () => resolve({ tracks: [], hasMore: false, total: 0, offset, limit }));
   });
 }
 
@@ -896,11 +915,12 @@ app.whenReady().then(async () => {
   await checkYtDlp();
   createWindow();
   discordRpc.init();
+  lastFm = new LastFmManager();
 
   // IPC Handlers
-  ipcMain.handle('search-tracks', async (_, { query, source }) => {
-    if (source === 'youtube') return await searchYouTube(query);
-    return await searchSoundCloud(query);
+  ipcMain.handle('search-tracks', async (_, { query, source, offset = 0, limit = 25 }) => {
+    if (source === 'youtube') return await searchYouTube(query, limit, offset);
+    return await searchSoundCloud(query, limit, offset);
   });
 
   ipcMain.handle('get-artist-profile', async (_, artistId) => {
@@ -1060,6 +1080,42 @@ app.whenReady().then(async () => {
     return isYtDlpAvailable;
   });
 
+  // Last.fm Integration Handlers
+  ipcMain.handle('lastfm-get-status', () => {
+    return lastFm ? lastFm.getStatus() : { connected: false, enabled: false, username: null };
+  });
+
+  ipcMain.handle('lastfm-start-auth', async () => {
+    if (!lastFm) return { success: false, error: 'LastFm not initialized' };
+    return await lastFm.startAuth();
+  });
+
+  ipcMain.handle('lastfm-complete-auth', async (_, token) => {
+    if (!lastFm) return { success: false, error: 'LastFm not initialized' };
+    return await lastFm.completeAuth(token);
+  });
+
+  ipcMain.handle('lastfm-toggle', async (_, enable) => {
+    if (!lastFm) return { connected: false, enabled: false, username: null };
+    return lastFm.toggle(enable);
+  });
+
+  ipcMain.handle('lastfm-disconnect', async () => {
+    if (!lastFm) return { connected: false, enabled: false, username: null };
+    return lastFm.disconnect();
+  });
+
+  ipcMain.handle('lastfm-now-playing', async (_, track) => {
+    if (!lastFm) return false;
+    await lastFm.updateNowPlaying(track);
+    return true;
+  });
+
+  ipcMain.handle('lastfm-scrobble', async (_, { track, timestamp }) => {
+    if (!lastFm) return { success: false };
+    return await lastFm.scrobble(track, timestamp);
+  });
+
   ipcMain.handle('get-favorites-backup', () => {
     try {
       const userBackup = path.join(app.getPath('userData'), 'favorites_autobackup.json');
@@ -1093,6 +1149,43 @@ app.whenReady().then(async () => {
       return true;
     } catch (err) {
       console.warn('[BACKUP] Failed to save favorites:', err.message);
+      return false;
+    }
+  });
+
+  ipcMain.handle('get-playlists-backup', () => {
+    try {
+      const userBackup = path.join(app.getPath('userData'), 'playlists_autobackup.json');
+      if (fs.existsSync(userBackup)) {
+        return JSON.parse(fs.readFileSync(userBackup, 'utf-8'));
+      }
+      const rootBackup = path.join(__dirname, 'playlists_backup.json');
+      if (fs.existsSync(rootBackup)) {
+        return JSON.parse(fs.readFileSync(rootBackup, 'utf-8'));
+      }
+    } catch (e) {
+      console.warn('Failed to read playlists backup:', e);
+    }
+    return [];
+  });
+
+  ipcMain.handle('save-playlists-backup', async (_, playlists) => {
+    if (!Array.isArray(playlists)) return false;
+    try {
+      const userDataDir = app.getPath('userData');
+      const backupPath = path.join(userDataDir, 'playlists_autobackup.json');
+      const tmpPath = backupPath + '.tmp';
+      fs.writeFileSync(tmpPath, JSON.stringify(playlists, null, 2), 'utf8');
+      fs.renameSync(tmpPath, backupPath);
+
+      const rootBackup = path.join(__dirname, 'playlists_backup.json');
+      try {
+        fs.writeFileSync(rootBackup + '.tmp', JSON.stringify(playlists, null, 2), 'utf8');
+        fs.renameSync(rootBackup + '.tmp', rootBackup);
+      } catch (e) {}
+      return true;
+    } catch (err) {
+      console.warn('[BACKUP] Failed to save playlists:', err.message);
       return false;
     }
   });

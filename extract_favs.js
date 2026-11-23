@@ -21,7 +21,7 @@ for (const file of fs.readdirSync(ldbDir)) {
           let inStr = false;
           let esc = false;
           let end = -1;
-          for (let i = start; i < Math.min(start + 5000, content.length); i++) {
+          for (let i = start; i < Math.min(start + 50000, content.length); i++) {
             const c = content[i];
             if (esc) { esc = false; continue; }
             if (c === '\\') { esc = true; continue; }

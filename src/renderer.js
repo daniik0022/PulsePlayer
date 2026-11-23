@@ -37,6 +37,7 @@
   let queueIndex = -1;
   let history = safeParseLS('pulse_history', []);
   let favorites = safeParseLS('pulse_favorites', []);
+  let playlists = safeParseLS('pulse_custom_playlists', []);
   let playStats = safeParseLS('pulse_play_stats', { tracks: {}, artists: {} });
   let lastSession = safeParseLS('pulse_last_session', null);
   let lastSessionSaveTime = 0;
@@ -49,6 +50,17 @@
         localStorage.setItem('pulse_favorites', JSON.stringify(favorites));
         if (typeof updateBadgeCounts === 'function') updateBadgeCounts();
         if (typeof renderHomeView === 'function') renderHomeView();
+      }
+    }).catch(() => {});
+  }
+
+  if (playlists.length === 0 && window.api?.getPlaylistsBackup) {
+    window.api.getPlaylistsBackup().then(backup => {
+      if (Array.isArray(backup) && backup.length > 0 && playlists.length === 0) {
+        playlists = backup;
+        localStorage.setItem('pulse_custom_playlists', JSON.stringify(playlists));
+        if (typeof updateBadgeCounts === 'function') updateBadgeCounts();
+        if (typeof renderPlaylistsGrid === 'function') renderPlaylistsGrid();
       }
     }).catch(() => {});
   }
@@ -130,6 +142,9 @@
   const searchInitialState = document.getElementById('searchInitialState');
   const searchLoader = document.getElementById('searchLoader');
   const searchLoaderText = document.getElementById('searchLoaderText');
+  const searchMoreContainer = document.getElementById('searchMoreContainer');
+  const btnSearchLoadMore = document.getElementById('btnSearchLoadMore');
+  const searchLoadMoreText = document.getElementById('searchLoadMoreText');
 
   // Artist elements
   const artistBanner = document.getElementById('artistBanner');
@@ -162,6 +177,41 @@
   const bioPlaylists = document.getElementById('bioPlaylists');
   const bioUserId = document.getElementById('bioUserId');
 
+  // Playlists Elements
+  const viewPlaylists = document.getElementById('viewPlaylists');
+  const viewPlaylistDetail = document.getElementById('viewPlaylistDetail');
+  const playlistsGrid = document.getElementById('playlistsGrid');
+  const btnCreatePlaylistHero = document.getElementById('btnCreatePlaylistHero');
+  const playlistsCountEl = document.getElementById('playlistsCount');
+
+  // Playlist Detail Elements
+  const playlistDetailCover = document.getElementById('playlistDetailCover');
+  const playlistDetailTitle = document.getElementById('playlistDetailTitle');
+  const playlistDetailMeta = document.getElementById('playlistDetailMeta');
+  const btnPlayPlaylist = document.getElementById('btnPlayPlaylist');
+  const btnShufflePlaylist = document.getElementById('btnShufflePlaylist');
+  const btnRenamePlaylist = document.getElementById('btnRenamePlaylist');
+  const btnDeletePlaylist = document.getElementById('btnDeletePlaylist');
+  const playlistTracksList = document.getElementById('playlistTracksList');
+
+  // Playlist Picker Modal Elements
+  const playlistPickerModal = document.getElementById('playlistPickerModal');
+  const btnClosePlaylistPicker = document.getElementById('btnClosePlaylistPicker');
+  const pickerTrackArt = document.getElementById('pickerTrackArt');
+  const pickerTrackTitle = document.getElementById('pickerTrackTitle');
+  const pickerTrackArtist = document.getElementById('pickerTrackArtist');
+  const inputQuickCreatePlaylist = document.getElementById('inputQuickCreatePlaylist');
+  const btnQuickCreatePlaylist = document.getElementById('btnQuickCreatePlaylist');
+  const pickerPlaylistsList = document.getElementById('pickerPlaylistsList');
+
+  // Playlist Name Modal (Create / Rename)
+  const playlistNameModal = document.getElementById('playlistNameModal');
+  const playlistNameModalTitle = document.getElementById('playlistNameModalTitle');
+  const btnClosePlaylistNameModal = document.getElementById('btnClosePlaylistNameModal');
+  const inputPlaylistModalName = document.getElementById('inputPlaylistModalName');
+  const btnCancelPlaylistNameModal = document.getElementById('btnCancelPlaylistNameModal');
+  const btnSubmitPlaylistNameModal = document.getElementById('btnSubmitPlaylistNameModal');
+
   // Player Elements
   const playerArtworkWrapper = document.getElementById('playerArtworkWrapper');
   const playerArtwork = document.getElementById('playerArtwork');
@@ -192,6 +242,13 @@
   const iconVolMuted = document.getElementById('iconVolMuted');
   const btnVisualizer = document.getElementById('btnVisualizer');
   const btnDiscord = document.getElementById('btnDiscord');
+  const btnToggleLyricsFormat = document.getElementById('btnToggleLyricsFormat');
+  const lyricsFormatLabel = document.getElementById('lyricsFormatLabel');
+
+  let trackLastFmPlaybackStart = 0;
+  let trackLastFmScrobbled = false;
+  let currentTrackRawLrc = null;
+  let currentLyricsFormat = 'lrc';
   const btnLyrics = document.getElementById('btnLyrics');
   const focusContainer = document.getElementById('focusContainer');
   const focusAmbientBackdrop = document.getElementById('focusAmbientBackdrop');
@@ -220,6 +277,11 @@
   const lyricsLoader = document.getElementById('lyricsLoader');
   const lyricsEmpty = document.getElementById('lyricsEmpty');
   const lyricsContent = document.getElementById('lyricsContent');
+  const manualLyricsModal = document.getElementById('manualLyricsModal');
+  const manualLyricsTextarea = document.getElementById('manualLyricsTextarea');
+  const btnCloseManualLyrics = document.getElementById('btnCloseManualLyrics');
+  const btnCancelManualLyrics = document.getElementById('btnCancelManualLyrics');
+  const btnSaveManualLyrics = document.getElementById('btnSaveManualLyrics');
   const btnDownloadCurrent = document.getElementById('btnDownloadCurrent');
   const btnOpenDownloads = document.getElementById('btnOpenDownloads');
   const favCountEl = document.getElementById('favCount');
@@ -317,11 +379,106 @@
     localStorage.setItem('pulse_lyrics_queries', JSON.stringify(savedLyricsQueries));
   }
 
+  // Custom User-Supplied Lyrics Store
+  let isLyricsNotFound = false;
+  let customLyricsStore = safeParseLS('pulse_custom_lyrics', {});
+
+  function getCustomLyrics(track) {
+    if (!track) return null;
+    const idKey = String(track.id);
+    const normKey = `${(track.artist || '').toLowerCase().trim()}:::${(track.title || '').toLowerCase().trim()}`;
+    return customLyricsStore[idKey] || customLyricsStore[normKey] || null;
+  }
+
+  function setCustomLyrics(track, text) {
+    if (!track) return;
+    const idKey = String(track.id);
+    const normKey = `${(track.artist || '').toLowerCase().trim()}:::${(track.title || '').toLowerCase().trim()}`;
+    if (text && text.trim()) {
+      customLyricsStore[idKey] = text.trim();
+      customLyricsStore[normKey] = text.trim();
+    } else {
+      delete customLyricsStore[idKey];
+      delete customLyricsStore[normKey];
+    }
+    localStorage.setItem('pulse_custom_lyrics', JSON.stringify(customLyricsStore));
+  }
+
+  function openManualLyricsModal() {
+    if (!manualLyricsModal || !currentTrack) return;
+    const existing = getCustomLyrics(currentTrack);
+    if (manualLyricsTextarea) {
+      manualLyricsTextarea.value = existing || '';
+    }
+    manualLyricsModal.style.display = 'flex';
+    setTimeout(() => {
+      if (manualLyricsTextarea) manualLyricsTextarea.focus();
+    }, 50);
+  }
+
+  function closeManualLyricsModal() {
+    if (manualLyricsModal) {
+      manualLyricsModal.style.display = 'none';
+    }
+  }
+
+  function saveManualLyricsFromModal() {
+    if (!currentTrack || !manualLyricsTextarea) return;
+    const text = manualLyricsTextarea.value.trim();
+    if (!text) {
+      showToast('Введи текст песни');
+      return;
+    }
+    setCustomLyrics(currentTrack, text);
+    closeManualLyricsModal();
+    showToast('Текст сохранён за треком');
+    loadLyrics();
+  }
+
+  if (btnCloseManualLyrics) btnCloseManualLyrics.addEventListener('click', closeManualLyricsModal);
+  if (btnCancelManualLyrics) btnCancelManualLyrics.addEventListener('click', closeManualLyricsModal);
+  if (btnSaveManualLyrics) btnSaveManualLyrics.addEventListener('click', saveManualLyricsFromModal);
+  if (manualLyricsTextarea) {
+    manualLyricsTextarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        saveManualLyricsFromModal();
+      }
+    });
+  }
+
+  function stripLrcBrackets(text) {
+    if (!text) return '';
+    const rawLines = text
+      .split(/\r?\n/)
+      .filter(line => !/^\s*\[[a-z]{1,10}:.*?\]\s*$/i.test(line))
+      .map(line => line
+        .replace(/\[\d{1,2}:\d{2}(?:\.\d+)?\]/g, '')
+        .replace(/\[[a-z]{1,10}:.*?\]/gi, '')
+        .trim()
+      );
+
+    const result = [];
+    let prevEmpty = true;
+    for (const line of rawLines) {
+      if (!line) {
+        if (!prevEmpty) {
+          result.push('');
+          prevEmpty = true;
+        }
+      } else {
+        result.push(line);
+        prevEmpty = false;
+      }
+    }
+    return result.join('\n');
+  }
+
   function parseLRC(text) {
     if (!text) return [];
     const lines = text.split(/\r?\n/);
     const result = [];
-    const timeRegex = /\[(\d{2}):(\d{2}(?:\.\d+)?)\](.*)/;
+    const timeRegex = /\[(\d{1,2}):(\d{2}(?:\.\d+)?)\](.*)/;
 
     for (const line of lines) {
       const match = line.match(timeRegex);
@@ -340,6 +497,8 @@
 
   async function loadLyrics(forceQuery = null) {
     if (!currentTrack) {
+      currentTrackRawLrc = null;
+      if (btnToggleLyricsFormat) btnToggleLyricsFormat.style.display = 'none';
       if (lyricsTrackTitle) lyricsTrackTitle.textContent = 'Нет воспроизведения';
       if (lyricsTrackArtist) lyricsTrackArtist.textContent = '—';
       if (focusTrackTitle) focusTrackTitle.textContent = 'Нет воспроизведения';
@@ -407,6 +566,34 @@
       lyricsScrollAnimId = null;
     }
 
+    const customText = getCustomLyrics(currentTrack);
+    if (!forceQuery && customText) {
+      lyricsLoader.style.display = 'none';
+      isLyricsNotFound = false;
+      const isLrc = /\[\d{1,2}:\d{2}/.test(customText);
+      if (isLrc) {
+        currentTrackRawLrc = customText;
+        currentLyricsFormat = 'lrc';
+        if (btnToggleLyricsFormat) {
+          btnToggleLyricsFormat.style.display = 'inline-flex';
+          btnToggleLyricsFormat.classList.remove('plain-mode');
+          if (lyricsFormatLabel) lyricsFormatLabel.textContent = 'Караоке (LRC)';
+        }
+        parsedLyrics = parseLRC(customText);
+        renderSyncedLyrics(parsedLyrics);
+      } else {
+        currentTrackRawLrc = null;
+        if (btnToggleLyricsFormat) btnToggleLyricsFormat.style.display = 'none';
+        parsedLyrics = [];
+        renderPlainLyrics(customText);
+      }
+      if (lyricsSourceBadge) {
+        lyricsSourceBadge.textContent = isLrc ? 'ПОЛЬЗОВАТЕЛЬСКИЙ (LRC)' : 'ПОЛЬЗОВАТЕЛЬСКИЙ (ТЕКСТ)';
+        lyricsSourceBadge.style.display = 'inline-block';
+      }
+      return;
+    }
+
     try {
       let data = null;
       if (effectiveQuery) {
@@ -418,17 +605,30 @@
       lyricsLoader.style.display = 'none';
 
       if (!data || (!data.syncedLyrics && !data.plainLyrics && !data.instrumental)) {
+        currentTrackRawLrc = null;
+        if (btnToggleLyricsFormat) btnToggleLyricsFormat.style.display = 'none';
+        isLyricsNotFound = true;
         lyricsEmpty.style.display = 'flex';
         lyricsEmpty.innerHTML = `
           <div class="empty-icon">📝</div>
           <h3>Текст не найден</h3>
-          <p>Для этого трека пока нет текста в базе LRCLIB. Попробуй уточнить название в поиске выше (например: «Артист Название»).</p>
+          <p>Для этого трека пока нет текста в базе. Попробуй уточнить название в поиске выше или добавь текст вручную.</p>
+          <button class="btn-manual-lyrics-add" id="btnOpenManualLyrics">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+            <span>Добавить текст вручную (Ctrl+Shift+L)</span>
+          </button>
         `;
+        const btnOpen = document.getElementById('btnOpenManualLyrics');
+        if (btnOpen) btnOpen.addEventListener('click', openManualLyricsModal);
         if (lyricsSourceBadge) lyricsSourceBadge.style.display = 'none';
         return;
       }
 
+      isLyricsNotFound = false;
+
       if (data.instrumental) {
+        currentTrackRawLrc = null;
+        if (btnToggleLyricsFormat) btnToggleLyricsFormat.style.display = 'none';
         lyricsEmpty.style.display = 'flex';
         lyricsEmpty.innerHTML = `
           <div class="empty-icon">🎹</div>
@@ -450,50 +650,72 @@
       }
 
       if (data.syncedLyrics) {
-        isSyncedLyrics = true;
+        currentTrackRawLrc = data.syncedLyrics;
+        currentLyricsFormat = 'lrc';
+        if (btnToggleLyricsFormat) {
+          btnToggleLyricsFormat.style.display = 'inline-flex';
+          btnToggleLyricsFormat.classList.remove('plain-mode');
+          if (lyricsFormatLabel) lyricsFormatLabel.textContent = 'Караоке (LRC)';
+        }
         parsedLyrics = parseLRC(data.syncedLyrics);
-
         if (!parsedLyrics.length) {
+          currentTrackRawLrc = null;
+          if (btnToggleLyricsFormat) btnToggleLyricsFormat.style.display = 'none';
           if (data.plainLyrics) {
             renderPlainLyrics(data.plainLyrics);
           } else {
+            isLyricsNotFound = true;
             lyricsEmpty.style.display = 'flex';
           }
           return;
         }
-
-        parsedLyrics.forEach((item, idx) => {
-          const lineEl = document.createElement('div');
-          lineEl.className = 'lyric-line';
-          lineEl.dataset.idx = idx;
-          lineEl.textContent = item.text;
-
-          lineEl.addEventListener('click', () => {
-            audio.currentTime = item.time;
-            if (audio.paused) audio.play();
-          });
-
-          lyricsContent.appendChild(lineEl);
-        });
+        renderSyncedLyrics(parsedLyrics);
       } else if (data.plainLyrics) {
+        currentTrackRawLrc = null;
+        if (btnToggleLyricsFormat) btnToggleLyricsFormat.style.display = 'none';
         renderPlainLyrics(data.plainLyrics);
       } else {
+        currentTrackRawLrc = null;
+        if (btnToggleLyricsFormat) btnToggleLyricsFormat.style.display = 'none';
+        isLyricsNotFound = true;
         lyricsEmpty.style.display = 'flex';
       }
     } catch (err) {
+      currentTrackRawLrc = null;
+      if (btnToggleLyricsFormat) btnToggleLyricsFormat.style.display = 'none';
       lyricsLoader.style.display = 'none';
+      isLyricsNotFound = true;
       lyricsEmpty.style.display = 'flex';
       console.error('Failed to load lyrics:', err);
     }
   }
 
+  function renderSyncedLyrics(lyricsList) {
+    isSyncedLyrics = true;
+    lyricsContent.innerHTML = '';
+    lyricsList.forEach((item, idx) => {
+      const lineEl = document.createElement('div');
+      lineEl.className = 'lyric-line';
+      lineEl.dataset.idx = idx;
+      lineEl.textContent = item.text;
+
+      lineEl.addEventListener('click', () => {
+        audio.currentTime = item.time;
+        if (audio.paused) audio.play();
+      });
+
+      lyricsContent.appendChild(lineEl);
+    });
+  }
+
   function renderPlainLyrics(text) {
     isSyncedLyrics = false;
     lyricsContent.innerHTML = '';
+    const cleanText = stripLrcBrackets(text);
     const plainBox = document.createElement('div');
     plainBox.className = 'plain-lyrics-container';
     
-    const lines = text.split(/\r?\n/);
+    const lines = cleanText.split(/\r?\n/);
     lines.forEach(l => {
       const p = document.createElement('div');
       p.className = l.trim() ? 'plain-lyric-row' : 'plain-lyric-gap';
@@ -501,6 +723,25 @@
       plainBox.appendChild(p);
     });
     lyricsContent.appendChild(plainBox);
+  }
+
+  if (btnToggleLyricsFormat) {
+    btnToggleLyricsFormat.addEventListener('click', () => {
+      if (!currentTrackRawLrc) return;
+      if (currentLyricsFormat === 'lrc') {
+        currentLyricsFormat = 'plain';
+        btnToggleLyricsFormat.classList.add('plain-mode');
+        if (lyricsFormatLabel) lyricsFormatLabel.textContent = 'Обычный текст';
+        renderPlainLyrics(currentTrackRawLrc);
+      } else {
+        currentLyricsFormat = 'lrc';
+        btnToggleLyricsFormat.classList.remove('plain-mode');
+        if (lyricsFormatLabel) lyricsFormatLabel.textContent = 'Караоке (LRC)';
+        parsedLyrics = parseLRC(currentTrackRawLrc);
+        renderSyncedLyrics(parsedLyrics);
+        currentActiveLyricIndex = -1;
+      }
+    });
   }
 
   if (btnSaveLyricsQuery) {
@@ -734,6 +975,15 @@
     if (favCountEl) favCountEl.textContent = favorites.length;
     if (localCountEl) localCountEl.textContent = localTracks.length;
     if (queueCountEl) queueCountEl.textContent = queue.length;
+    if (playlistsCountEl) playlistsCountEl.textContent = playlists.length;
+  }
+
+  function savePlaylists() {
+    localStorage.setItem('pulse_custom_playlists', JSON.stringify(playlists));
+    if (window.api && window.api.savePlaylistsBackup) {
+      window.api.savePlaylistsBackup(playlists).catch(() => {});
+    }
+    updateBadgeCounts();
   }
 
   function saveLocalTracks() {
@@ -876,9 +1126,12 @@
     viewHome.style.display = 'none';
     viewSearch.style.display = 'none';
     viewArtist.style.display = 'none';
+    if (viewPlaylists) viewPlaylists.style.display = 'none';
+    if (viewPlaylistDetail) viewPlaylistDetail.style.display = 'none';
     if (viewLyrics) viewLyrics.style.display = 'none';
     if (viewStats) viewStats.style.display = 'none';
     if (btnImportHeader) btnImportHeader.style.display = 'none';
+    if (searchMoreContainer) searchMoreContainer.style.display = 'none';
 
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
 
@@ -896,6 +1149,8 @@
       if (!searchInput.value.trim()) {
         searchInitialState.style.display = 'flex';
         tracksList.style.display = 'none';
+      } else if (currentSearchHasMore) {
+        if (searchMoreContainer) searchMoreContainer.style.display = 'flex';
       }
     } else if (viewName === 'local') {
       viewSearch.style.display = 'flex';
@@ -974,6 +1229,15 @@
       renderStatsView();
     } else if (viewName === 'artist') {
       viewArtist.style.display = 'flex';
+    } else if (viewName === 'playlists') {
+      if (viewPlaylists) viewPlaylists.style.display = 'flex';
+      const nav = document.querySelector('.nav-item[data-tab="playlists"]');
+      if (nav) nav.classList.add('active');
+      renderPlaylistsGrid();
+    } else if (viewName === 'playlistDetail') {
+      if (viewPlaylistDetail) viewPlaylistDetail.style.display = 'flex';
+      const nav = document.querySelector('.nav-item[data-tab="playlists"]');
+      if (nav) nav.classList.add('active');
     }
 
     if (viewName !== 'lyrics') {
@@ -1505,43 +1769,106 @@
     });
   }
 
-  // Search Logic
+  // Search Logic & Pagination
+  let currentSearchQuery = '';
+  let currentSearchOffset = 0;
+  let currentSearchResults = [];
+  let currentSearchHasMore = false;
+  let isSearchLoadingMore = false;
+
   async function performSearch(query) {
     if (!query || !query.trim()) return;
     switchView('search');
 
-    viewTitle.textContent = `Поиск: "${query}"`;
+    const cleanQuery = query.trim();
+    currentSearchQuery = cleanQuery;
+    currentSearchOffset = 0;
+    currentSearchResults = [];
+    currentSearchHasMore = false;
+    isSearchLoadingMore = false;
+
+    if (searchMoreContainer) searchMoreContainer.style.display = 'none';
+
+    viewTitle.textContent = `Поиск: "${cleanQuery}"`;
     searchInitialState.style.display = 'none';
     tracksList.style.display = 'none';
     searchLoader.style.display = 'flex';
     searchLoaderText.textContent = `Поиск в ${currentSource === 'soundcloud' ? 'SoundCloud' : 'YouTube'}...`;
 
     try {
-      const results = await window.api.searchTracks(query, currentSource);
+      const resp = await window.api.searchTracks(cleanQuery, currentSource, 0, 25);
       searchLoader.style.display = 'none';
       tracksList.style.display = 'flex';
 
-      const qLower = query.toLowerCase().trim();
+      const results = Array.isArray(resp) ? resp : (resp?.tracks || []);
+      currentSearchHasMore = Boolean(resp?.hasMore && results.length >= 25);
+      currentSearchOffset = results.length;
+
+      const qLower = cleanQuery.toLowerCase();
       const matchedLocal = localTracks.filter(lt =>
         (lt.title && lt.title.toLowerCase().includes(qLower)) ||
         (lt.artist && lt.artist.toLowerCase().includes(qLower))
       );
-      const combined = [...matchedLocal, ...(results || [])];
+      currentSearchResults = [...matchedLocal, ...results];
 
-      if (!combined || combined.length === 0) {
+      if (currentSearchResults.length === 0) {
         tracksList.innerHTML = `<div class="empty-state"><h3>Ничего не найдено</h3><p>Попробуй изменить поисковый запрос</p></div>`;
         resultsCount.textContent = '0 треков';
+        if (searchMoreContainer) searchMoreContainer.style.display = 'none';
         return;
       }
 
-      resultsCount.textContent = `${combined.length} треков`;
-      renderTrackRows(combined, tracksList);
+      resultsCount.textContent = `${currentSearchResults.length} треков`;
+      renderTrackRows(currentSearchResults, tracksList);
+
+      if (searchMoreContainer) {
+        searchMoreContainer.style.display = currentSearchHasMore ? 'flex' : 'none';
+        if (btnSearchLoadMore) btnSearchLoadMore.disabled = false;
+        if (searchLoadMoreText) searchLoadMoreText.textContent = 'Загрузить ещё 25';
+      }
     } catch (err) {
       searchLoader.style.display = 'none';
       tracksList.style.display = 'flex';
       tracksList.innerHTML = `<div class="empty-state"><h3>Ошибка поиска</h3><p>${err.message}</p></div>`;
+      if (searchMoreContainer) searchMoreContainer.style.display = 'none';
       showToast('Ошибка при поиске');
     }
+  }
+
+  async function loadMoreSearchResults() {
+    if (!currentSearchQuery || isSearchLoadingMore || !currentSearchHasMore) return;
+    isSearchLoadingMore = true;
+    if (btnSearchLoadMore) btnSearchLoadMore.disabled = true;
+    if (searchLoadMoreText) searchLoadMoreText.textContent = 'Загрузка...';
+
+    try {
+      const resp = await window.api.searchTracks(currentSearchQuery, currentSource, currentSearchOffset, 25);
+      const newTracks = Array.isArray(resp) ? resp : (resp?.tracks || []);
+
+      if (newTracks.length > 0) {
+        appendTrackRows(newTracks, tracksList, currentSearchResults);
+        currentSearchOffset += newTracks.length;
+        currentSearchHasMore = Boolean(resp?.hasMore && newTracks.length >= 25);
+        currentSearchResults.push(...newTracks);
+        resultsCount.textContent = `${currentSearchResults.length} треков`;
+      } else {
+        currentSearchHasMore = false;
+        showToast('Больше треков не найдено');
+      }
+    } catch (err) {
+      showToast('Ошибка при загрузке следующей страницы');
+    } finally {
+      isSearchLoadingMore = false;
+      if (btnSearchLoadMore) btnSearchLoadMore.disabled = false;
+      if (searchLoadMoreText) searchLoadMoreText.textContent = 'Загрузить ещё 25';
+      if (searchMoreContainer) {
+        searchMoreContainer.style.display = currentSearchHasMore ? 'flex' : 'none';
+      }
+    }
+  }
+
+  if (btnSearchLoadMore) {
+    btnSearchLoadMore.addEventListener('click', loadMoreSearchResults);
   }
 
   searchInput.addEventListener('keydown', (e) => {
@@ -1585,139 +1912,617 @@
   });
 
   // Render Track Rows
-  function renderTrackRows(tracks, targetContainer) {
-    targetContainer.innerHTML = '';
-    tracks.forEach((t, idx) => {
-      const isFav = favorites.some(f => f.id === t.id);
-      const isCurrent = currentTrack && currentTrack.id === t.id;
-      const isLocal = t.source === 'local';
+  function renderTrackRowElement(t, idx, getFullList, playlistContextId = null) {
+    const isFav = favorites.some(f => f.id === t.id);
+    const isCurrent = currentTrack && currentTrack.id === t.id;
+    const isLocal = t.source === 'local';
 
-      const row = document.createElement('div');
-      row.className = `track-row ${isCurrent ? 'playing' : ''}`;
-      row.dataset.id = t.id;
+    const row = document.createElement('div');
+    row.className = `track-row ${isCurrent ? 'playing' : ''}`;
+    row.dataset.id = t.id;
 
-      const sourceLabel = isLocal ? 'LOCAL' : (t.source === 'soundcloud' ? 'SC' : 'YT');
-      const badgeClass = isLocal ? 'row-source-badge badge-local' : 'row-source-badge';
+    const sourceLabel = isLocal ? 'LOCAL' : (t.source === 'soundcloud' ? 'SC' : 'YT');
+    const badgeClass = isLocal ? 'row-source-badge badge-local' : 'row-source-badge';
 
-      row.innerHTML = `
-        <div class="row-index">
-          ${isCurrent && isPlaying ? `
-            <div class="mini-equalizer">
-              <span></span><span></span><span></span>
-            </div>
-          ` : (idx + 1)}
-        </div>
-        <div class="row-artwork">
-          ${t.artworkUrl ? `<img src="${t.artworkUrl}" alt="cover" loading="lazy">` : `<div class="row-artwork-fallback">♪</div>`}
-          <div class="row-play-overlay">
-            <svg viewBox="0 0 24 24"><polygon points="6 4 18 12 6 20 6 4"></polygon></svg>
+    row.innerHTML = `
+      <div class="row-index">
+        ${isCurrent && isPlaying ? `
+          <div class="mini-equalizer">
+            <span></span><span></span><span></span>
           </div>
+        ` : (idx + 1)}
+      </div>
+      <div class="row-artwork">
+        ${t.artworkUrl ? `<img src="${t.artworkUrl}" alt="cover" loading="lazy">` : `<div class="row-artwork-fallback">♪</div>`}
+        <div class="row-play-overlay">
+          <svg viewBox="0 0 24 24"><polygon points="6 4 18 12 6 20 6 4"></polygon></svg>
         </div>
-        <div class="row-info">
-          <div class="row-title" title="${esc(t.title)}">${esc(t.title)}</div>
-          <div class="row-meta">
-            <span class="row-artist-link" title="Открыть автора">${esc(t.artist)}</span>
-            <span class="${badgeClass}">${sourceLabel}</span>
-          </div>
+      </div>
+      <div class="row-info">
+        <div class="row-title" title="${esc(t.title)}">${esc(t.title)}</div>
+        <div class="row-meta">
+          <span class="row-artist-link" title="Открыть автора">${esc(t.artist)}</span>
+          <span class="${badgeClass}">${sourceLabel}</span>
         </div>
-        <div class="row-actions">
-          ${isLocal ? '' : `
-            <button class="btn-icon-action btn-row-wave" title="Запустить Волну от этого трека">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M2 12c2.5-4 5-4 7.5 0s5 4 7.5 0 5-4 7 0"></path>
-                <path d="M2 17c2.5-3 5-3 7.5 0s5 3 7.5 0 5-3 7 0"></path>
-              </svg>
-            </button>
-          `}
-          <button class="btn-icon-action btn-fav ${isFav ? 'liked' : ''}" title="${isFav ? 'Убрать из любимых' : 'В любимые'}">
-            <svg viewBox="0 0 24 24" fill="${isFav ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
-              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+      </div>
+      <div class="row-actions">
+        ${isLocal ? '' : `
+          <button class="btn-icon-action btn-row-wave" title="Запустить Волну от этого трека">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M2 12c2.5-4 5-4 7.5 0s5 4 7.5 0 5-4 7 0"></path>
+              <path d="M2 17c2.5-3 5-3 7.5 0s5 3 7.5 0 5-3 7 0"></path>
             </svg>
           </button>
-          ${isLocal ? `
-            <button class="btn-icon-action btn-delete-local" title="Убрать из списка локальных треков">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"></line>
-                <line x1="6" y1="6" x2="18" y2="18"></line>
-              </svg>
-            </button>
-          ` : `
-            <button class="btn-icon-action btn-download" title="Скачать MP3">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7 10 12 15 17 10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-              </svg>
-            </button>
-          `}
+        `}
+        <button class="btn-icon-action btn-fav ${isFav ? 'liked' : ''}" title="${isFav ? 'Убрать из любимых' : 'В любимые'}">
+          <svg viewBox="0 0 24 24" fill="${isFav ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+          </svg>
+        </button>
+        <button class="btn-icon-action btn-add-playlist" title="Добавить в плейлист">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
+        ${playlistContextId ? `
+          <button class="btn-icon-action btn-remove-from-playlist" title="Удалить из этого плейлиста">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </button>
+        ` : ''}
+        ${isLocal ? `
+          <button class="btn-icon-action btn-delete-local" title="Убрать из списка локальных треков">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        ` : `
+          <button class="btn-icon-action btn-download" title="Скачать MP3">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+          </button>
+        `}
+      </div>
+      <div class="row-duration">${formatMs(t.durationMs)}</div>
+    `;
+
+    // Play row
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.btn-icon-action') || e.target.closest('.row-artist-link')) return;
+      const list = typeof getFullList === 'function' ? getFullList() : getFullList;
+      setQueue(list, idx);
+      playTrack(t);
+    });
+
+    // Click Artist Name
+    const artistLink = row.querySelector('.row-artist-link');
+    artistLink.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (t.source === 'local') {
+        showToast(`Исполнитель: ${t.artist}`);
+        return;
+      }
+      if (t.artistId) {
+        openArtistProfile(t.artistId);
+      } else if (t.artist) {
+        performSearch(t.artist);
+      } else {
+        showToast(`Артист: ${t.artist}`);
+      }
+    });
+
+    // Actions
+    const waveRowBtn = row.querySelector('.btn-row-wave');
+    if (waveRowBtn) {
+      waveRowBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startWave(t);
+      });
+    }
+
+    const favBtn = row.querySelector('.btn-fav');
+    favBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFavorite(t);
+      favBtn.classList.toggle('liked');
+      favBtn.querySelector('svg').setAttribute('fill', favBtn.classList.contains('liked') ? 'currentColor' : 'none');
+    });
+
+    const btnAddPl = row.querySelector('.btn-add-playlist');
+    if (btnAddPl) {
+      btnAddPl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openPlaylistPicker(t);
+      });
+    }
+
+    const btnRemovePl = row.querySelector('.btn-remove-from-playlist');
+    if (btnRemovePl) {
+      btnRemovePl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeTrackFromPlaylist(playlistContextId, t.id);
+      });
+    }
+
+    const downloadBtn = row.querySelector('.btn-download');
+    if (downloadBtn) {
+      downloadBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        triggerDownload(t);
+      });
+    }
+
+    const delBtn = row.querySelector('.btn-delete-local');
+    if (delBtn) {
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        localTracks = localTracks.filter(lt => lt.id !== t.id);
+        saveLocalTracks();
+        showToast(`Удален из списка: ${t.title}`);
+        const activeTab = document.querySelector('.nav-item.active')?.dataset.tab;
+        if (activeTab === 'local') {
+          handleSidebarTab('local');
+        }
+      });
+    }
+
+    return row;
+  }
+
+  function renderTrackRows(tracks, targetContainer, append = false, playlistContextId = null) {
+    if (!append) targetContainer.innerHTML = '';
+    tracks.forEach((t, idx) => {
+      targetContainer.appendChild(renderTrackRowElement(t, idx, () => tracks === currentSearchResults ? currentSearchResults : tracks, playlistContextId));
+    });
+  }
+
+  function appendTrackRows(newTracks, targetContainer, baseList) {
+    const startIndex = baseList.length;
+    newTracks.forEach((t, i) => {
+      targetContainer.appendChild(renderTrackRowElement(t, startIndex + i, () => currentSearchResults, null));
+    });
+  }
+
+  // ========================================================
+  // Custom Playlists System (Spotify Flow)
+  // ========================================================
+  let currentOpenedPlaylistId = null;
+  let pickerCurrentTrack = null;
+  let playlistModalMode = 'create'; // 'create' | 'rename'
+  let playlistModalTargetId = null;
+
+  function createPlaylistCoverEl(playlist) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'playlist-card-cover';
+
+    const tracksWithArt = (playlist.tracks || []).filter(t => t.artworkUrl);
+    const uniqueArtworks = [];
+    const seenUrls = new Set();
+    for (const t of tracksWithArt) {
+      if (!seenUrls.has(t.artworkUrl)) {
+        seenUrls.add(t.artworkUrl);
+        uniqueArtworks.push(t.artworkUrl);
+      }
+      if (uniqueArtworks.length >= 4) break;
+    }
+
+    if (uniqueArtworks.length >= 4) {
+      const collage = document.createElement('div');
+      collage.className = 'playlist-cover-collage';
+      uniqueArtworks.slice(0, 4).forEach(url => {
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = 'cover';
+        img.loading = 'lazy';
+        collage.appendChild(img);
+      });
+      wrapper.appendChild(collage);
+    } else if (uniqueArtworks.length > 0) {
+      const img = document.createElement('img');
+      img.className = 'playlist-cover-single';
+      img.src = uniqueArtworks[0];
+      img.alt = 'cover';
+      img.loading = 'lazy';
+      wrapper.appendChild(img);
+    } else {
+      const fallback = document.createElement('div');
+      fallback.className = 'playlist-cover-fallback';
+      fallback.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M9 18V5l12-2v13"></path>
+          <circle cx="6" cy="18" r="3"></circle>
+          <circle cx="18" cy="16" r="3"></circle>
+        </svg>
+      `;
+      wrapper.appendChild(fallback);
+    }
+    return wrapper;
+  }
+
+  function renderPlaylistsGrid() {
+    if (!playlistsGrid) return;
+    playlistsGrid.innerHTML = '';
+
+    // 1. Create Card
+    const createCard = document.createElement('div');
+    createCard.className = 'playlist-create-card';
+    createCard.innerHTML = `
+      <div class="create-icon-ring">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      </div>
+      <span>Новый плейлист</span>
+    `;
+    createCard.addEventListener('click', openCreatePlaylistModal);
+    playlistsGrid.appendChild(createCard);
+
+    // 2. Playlists Cards
+    playlists.forEach(pl => {
+      const card = document.createElement('div');
+      card.className = 'playlist-card';
+      card.dataset.id = pl.id;
+
+      const coverEl = createPlaylistCoverEl(pl);
+
+      // Play button overlay
+      const playBtn = document.createElement('button');
+      playBtn.className = 'playlist-card-play-btn';
+      playBtn.title = 'Слушать плейлист';
+      playBtn.innerHTML = `<svg viewBox="0 0 24 24"><polygon points="6 4 18 12 6 20 6 4"></polygon></svg>`;
+      playBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (pl.tracks && pl.tracks.length > 0) {
+          setQueue(pl.tracks, 0);
+          playTrack(pl.tracks[0]);
+          showToast(`Воспроизведение: ${pl.title}`);
+        } else {
+          showToast('В плейлисте нет треков');
+        }
+      });
+      coverEl.appendChild(playBtn);
+      card.appendChild(coverEl);
+
+      const info = document.createElement('div');
+      info.className = 'playlist-card-info';
+      info.innerHTML = `
+        <div class="playlist-card-title" title="${esc(pl.title)}">${esc(pl.title)}</div>
+        <div class="playlist-card-meta">${(pl.tracks || []).length} треков</div>
+      `;
+      card.appendChild(info);
+
+      card.addEventListener('click', () => {
+        openPlaylistDetail(pl.id);
+      });
+
+      playlistsGrid.appendChild(card);
+    });
+  }
+
+  function openPlaylistDetail(playlistId) {
+    const pl = playlists.find(p => p.id === playlistId);
+    if (!pl) return;
+    currentOpenedPlaylistId = playlistId;
+    switchView('playlistDetail');
+
+    if (playlistDetailTitle) playlistDetailTitle.textContent = pl.title;
+
+    const totalMs = (pl.tracks || []).reduce((acc, t) => acc + (t.durationMs || 0), 0);
+    const totalMin = Math.round(totalMs / 60000);
+    if (playlistDetailMeta) {
+      playlistDetailMeta.textContent = `${pl.tracks.length} треков • ~${totalMin} мин • Создан: ${new Date(pl.createdAt).toLocaleDateString()}`;
+    }
+
+    if (playlistDetailCover) {
+      playlistDetailCover.innerHTML = '';
+      const coverEl = createPlaylistCoverEl(pl);
+      coverEl.style.width = '100%';
+      coverEl.style.height = '100%';
+      playlistDetailCover.appendChild(coverEl);
+    }
+
+    if (playlistTracksList) {
+      playlistTracksList.innerHTML = '';
+      if (!pl.tracks || pl.tracks.length === 0) {
+        playlistTracksList.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">🎧</div>
+            <h3>В плейлисте пока нет треков</h3>
+            <p>Нажимай на значок «+» на любом треке в поиске или медиатеке, чтобы добавить его сюда.</p>
+          </div>
+        `;
+      } else {
+        renderTrackRows(pl.tracks, playlistTracksList, false, playlistId);
+      }
+    }
+  }
+
+  function removeTrackFromPlaylist(playlistId, trackId) {
+    const pl = playlists.find(p => p.id === playlistId);
+    if (!pl || !Array.isArray(pl.tracks)) return;
+    const idx = pl.tracks.findIndex(t => t.id === trackId);
+    if (idx >= 0) {
+      const removed = pl.tracks.splice(idx, 1)[0];
+      pl.updatedAt = Date.now();
+      savePlaylists();
+      showToast(`Удален из «${pl.title}»: ${removed?.title || ''}`);
+      openPlaylistDetail(playlistId);
+    }
+  }
+
+  // Playlist Picker Modal (Track '+' button)
+  function openPlaylistPicker(track) {
+    if (!track) return;
+    pickerCurrentTrack = track;
+
+    if (pickerTrackArt) {
+      pickerTrackArt.innerHTML = track.artworkUrl 
+        ? `<img src="${track.artworkUrl}" alt="art" />`
+        : '♪';
+    }
+    if (pickerTrackTitle) pickerTrackTitle.textContent = track.title || 'Untitled';
+    if (pickerTrackArtist) pickerTrackArtist.textContent = track.artist || 'Unknown';
+    if (inputQuickCreatePlaylist) inputQuickCreatePlaylist.value = '';
+
+    renderPickerPlaylistsList();
+
+    if (playlistPickerModal) {
+      playlistPickerModal.style.display = 'flex';
+      setTimeout(() => inputQuickCreatePlaylist?.focus(), 50);
+    }
+  }
+
+  function closePlaylistPicker() {
+    if (playlistPickerModal) playlistPickerModal.style.display = 'none';
+    pickerCurrentTrack = null;
+  }
+
+  function renderPickerPlaylistsList() {
+    if (!pickerPlaylistsList) return;
+    pickerPlaylistsList.innerHTML = '';
+
+    if (!playlists || playlists.length === 0) {
+      pickerPlaylistsList.innerHTML = `
+        <div style="padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px;">
+          У тебя пока нет плейлистов.<br>Введи название выше и нажми «Создать».
         </div>
-        <div class="row-duration">${formatMs(t.durationMs)}</div>
+      `;
+      return;
+    }
+
+    playlists.forEach(pl => {
+      const isSelected = pickerCurrentTrack && (pl.tracks || []).some(t => t.id === pickerCurrentTrack.id);
+      const item = document.createElement('div');
+      item.className = `picker-playlist-item ${isSelected ? 'selected' : ''}`;
+
+      const firstArt = (pl.tracks || []).find(t => t.artworkUrl)?.artworkUrl;
+      const coverHtml = firstArt 
+        ? `<img src="${firstArt}" alt="art" />` 
+        : `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>`;
+
+      item.innerHTML = `
+        <div class="picker-item-left">
+          <div class="picker-item-cover">${coverHtml}</div>
+          <div class="picker-item-text">
+            <div class="picker-item-name">${esc(pl.title)}</div>
+            <div class="picker-item-count">${(pl.tracks || []).length} треков</div>
+          </div>
+        </div>
+        <div class="picker-item-check">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        </div>
       `;
 
-      // Play row
-      row.addEventListener('click', (e) => {
-        if (e.target.closest('.btn-icon-action') || e.target.closest('.row-artist-link')) return;
-        setQueue(tracks, idx);
-        playTrack(t);
+      item.addEventListener('click', () => {
+        if (!pickerCurrentTrack) return;
+        toggleTrackInPlaylist(pl.id, pickerCurrentTrack);
       });
 
-      // Click Artist Name
-      const artistLink = row.querySelector('.row-artist-link');
-      artistLink.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (t.source === 'local') {
-          showToast(`Исполнитель: ${t.artist}`);
-          return;
+      pickerPlaylistsList.appendChild(item);
+    });
+  }
+
+  function toggleTrackInPlaylist(playlistId, track) {
+    const pl = playlists.find(p => p.id === playlistId);
+    if (!pl) return;
+    if (!Array.isArray(pl.tracks)) pl.tracks = [];
+
+    const existingIdx = pl.tracks.findIndex(t => t.id === track.id);
+    if (existingIdx >= 0) {
+      pl.tracks.splice(existingIdx, 1);
+      showToast(`Удалено из «${pl.title}»`);
+    } else {
+      pl.tracks.push(track);
+      showToast(`Добавлено в «${pl.title}»`);
+    }
+    pl.updatedAt = Date.now();
+    savePlaylists();
+    renderPickerPlaylistsList();
+
+    if (currentOpenedPlaylistId === pl.id) {
+      openPlaylistDetail(pl.id);
+    }
+  }
+
+  function handleQuickCreatePlaylist() {
+    if (!inputQuickCreatePlaylist) return;
+    const name = inputQuickCreatePlaylist.value.trim();
+    if (!name) {
+      showToast('Введи название плейлиста');
+      return;
+    }
+    const newPl = {
+      id: 'pl_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+      title: name,
+      description: `Создан ${new Date().toLocaleDateString()}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      tracks: pickerCurrentTrack ? [pickerCurrentTrack] : []
+    };
+    playlists.unshift(newPl);
+    savePlaylists();
+    inputQuickCreatePlaylist.value = '';
+    showToast(`Плейлист «${name}» создан${pickerCurrentTrack ? ' и трек добавлен' : ''}!`);
+    renderPickerPlaylistsList();
+    if (currentOpenedPlaylistId === newPl.id) openPlaylistDetail(newPl.id);
+  }
+
+  // Create / Rename Modal
+  function openCreatePlaylistModal() {
+    playlistModalMode = 'create';
+    playlistModalTargetId = null;
+    if (playlistNameModalTitle) playlistNameModalTitle.textContent = 'НОВЫЙ ПЛЕЙЛИСТ';
+    if (inputPlaylistModalName) {
+      inputPlaylistModalName.value = '';
+      inputPlaylistModalName.placeholder = 'Например: Ночной фонк...';
+    }
+    if (playlistNameModal) {
+      playlistNameModal.style.display = 'flex';
+      setTimeout(() => inputPlaylistModalName?.focus(), 50);
+    }
+  }
+
+  function openRenamePlaylistModal(playlistId) {
+    const pl = playlists.find(p => p.id === playlistId);
+    if (!pl) return;
+    playlistModalMode = 'rename';
+    playlistModalTargetId = playlistId;
+    if (playlistNameModalTitle) playlistNameModalTitle.textContent = 'ПЕРЕИМЕНОВАТЬ ПЛЕЙЛИСТ';
+    if (inputPlaylistModalName) {
+      inputPlaylistModalName.value = pl.title;
+    }
+    if (playlistNameModal) {
+      playlistNameModal.style.display = 'flex';
+      setTimeout(() => inputPlaylistModalName?.focus(), 50);
+    }
+  }
+
+  function closePlaylistNameModal() {
+    if (playlistNameModal) playlistNameModal.style.display = 'none';
+  }
+
+  function submitPlaylistNameModal() {
+    const name = inputPlaylistModalName ? inputPlaylistModalName.value.trim() : '';
+    if (!name) {
+      showToast('Введи название плейлиста');
+      return;
+    }
+    if (playlistModalMode === 'create') {
+      const newPl = {
+        id: 'pl_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+        title: name,
+        description: `Создан ${new Date().toLocaleDateString()}`,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        tracks: []
+      };
+      playlists.unshift(newPl);
+      savePlaylists();
+      closePlaylistNameModal();
+      showToast(`Плейлист «${name}» создан!`);
+      openPlaylistDetail(newPl.id);
+    } else {
+      const pl = playlists.find(p => p.id === playlistModalTargetId);
+      if (pl) {
+        pl.title = name;
+        pl.updatedAt = Date.now();
+        savePlaylists();
+        closePlaylistNameModal();
+        showToast(`Плейлист переименован в «${name}»`);
+        if (currentOpenedPlaylistId === pl.id) {
+          openPlaylistDetail(pl.id);
         }
-        if (t.artistId) {
-          openArtistProfile(t.artistId);
-        } else if (t.artist) {
-          performSearch(t.artist);
-        } else {
-          showToast(`Артист: ${t.artist}`);
+      }
+    }
+  }
+
+  function deleteCurrentPlaylist() {
+    if (!currentOpenedPlaylistId) return;
+    const pl = playlists.find(p => p.id === currentOpenedPlaylistId);
+    if (!pl) return;
+    playlists = playlists.filter(p => p.id !== currentOpenedPlaylistId);
+    currentOpenedPlaylistId = null;
+    savePlaylists();
+    showToast(`Плейлист «${pl.title}» удалён`);
+    switchView('playlists');
+  }
+
+  // Bind Playlist Detail Action Buttons
+  if (btnCreatePlaylistHero) btnCreatePlaylistHero.addEventListener('click', openCreatePlaylistModal);
+  if (btnPlayPlaylist) {
+    btnPlayPlaylist.addEventListener('click', () => {
+      const pl = playlists.find(p => p.id === currentOpenedPlaylistId);
+      if (pl && pl.tracks && pl.tracks.length > 0) {
+        setQueue(pl.tracks, 0);
+        playTrack(pl.tracks[0]);
+      } else {
+        showToast('В плейлисте нет треков');
+      }
+    });
+  }
+  if (btnShufflePlaylist) {
+    btnShufflePlaylist.addEventListener('click', () => {
+      const pl = playlists.find(p => p.id === currentOpenedPlaylistId);
+      if (pl && pl.tracks && pl.tracks.length > 0) {
+        if (!isShuffle) {
+          isShuffle = true;
+          btnShuffle.classList.add('active');
         }
-      });
-
-      // Actions
-      const waveRowBtn = row.querySelector('.btn-row-wave');
-      if (waveRowBtn) {
-        waveRowBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          startWave(t);
-        });
+        const randIdx = Math.floor(Math.random() * pl.tracks.length);
+        setQueue(pl.tracks, randIdx);
+        playTrack(pl.tracks[randIdx]);
+        showToast(`Перемешан плейлист: ${pl.title}`);
+      } else {
+        showToast('В плейлисте нет треков');
       }
+    });
+  }
+  if (btnRenamePlaylist) {
+    btnRenamePlaylist.addEventListener('click', () => {
+      if (currentOpenedPlaylistId) openRenamePlaylistModal(currentOpenedPlaylistId);
+    });
+  }
+  if (btnDeletePlaylist) {
+    btnDeletePlaylist.addEventListener('click', () => {
+      if (currentOpenedPlaylistId) deleteCurrentPlaylist();
+    });
+  }
 
-      const favBtn = row.querySelector('.btn-fav');
-      favBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleFavorite(t);
-        favBtn.classList.toggle('liked');
-        favBtn.querySelector('svg').setAttribute('fill', favBtn.classList.contains('liked') ? 'currentColor' : 'none');
-      });
+  // Bind Playlist Picker Modal
+  if (btnClosePlaylistPicker) btnClosePlaylistPicker.addEventListener('click', closePlaylistPicker);
+  if (playlistPickerModal) {
+    playlistPickerModal.addEventListener('click', (e) => {
+      if (e.target === playlistPickerModal) closePlaylistPicker();
+    });
+  }
+  if (btnQuickCreatePlaylist) btnQuickCreatePlaylist.addEventListener('click', handleQuickCreatePlaylist);
+  if (inputQuickCreatePlaylist) {
+    inputQuickCreatePlaylist.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleQuickCreatePlaylist();
+    });
+  }
 
-      const downloadBtn = row.querySelector('.btn-download');
-      if (downloadBtn) {
-        downloadBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          triggerDownload(t);
-        });
-      }
-
-      const delBtn = row.querySelector('.btn-delete-local');
-      if (delBtn) {
-        delBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          localTracks = localTracks.filter(lt => lt.id !== t.id);
-          saveLocalTracks();
-          showToast(`Удален из списка: ${t.title}`);
-          const activeTab = document.querySelector('.nav-item.active')?.dataset.tab;
-          if (activeTab === 'local') {
-            handleSidebarTab('local');
-          }
-        });
-      }
-
-      targetContainer.appendChild(row);
+  // Bind Playlist Name Modal
+  if (btnClosePlaylistNameModal) btnClosePlaylistNameModal.addEventListener('click', closePlaylistNameModal);
+  if (btnCancelPlaylistNameModal) btnCancelPlaylistNameModal.addEventListener('click', closePlaylistNameModal);
+  if (btnSubmitPlaylistNameModal) btnSubmitPlaylistNameModal.addEventListener('click', submitPlaylistNameModal);
+  if (inputPlaylistModalName) {
+    inputPlaylistModalName.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitPlaylistNameModal();
+    });
+  }
+  if (playlistNameModal) {
+    playlistNameModal.addEventListener('click', (e) => {
+      if (e.target === playlistNameModal) closePlaylistNameModal();
     });
   }
 
@@ -1746,6 +2551,11 @@
     updatePlayerMeta(track);
     highlightPlayingRow();
     trackStatsRecorded = false;
+    trackLastFmPlaybackStart = Math.floor(Date.now() / 1000);
+    trackLastFmScrobbled = false;
+    if (window.api && window.api.lastFmNowPlaying) {
+      window.api.lastFmNowPlaying(track).catch(() => {});
+    }
 
     if (isLyricsOpen) {
       loadLyrics();
@@ -2090,6 +2900,20 @@
       recordTrackPlay(currentTrack);
     }
 
+    // Last.fm Scrobble: played >= 30s OR played >= 50%
+    if (!trackLastFmScrobbled && currentTrack && dur > 0 && !audio.paused) {
+      if (cur >= 30 || cur >= dur * 0.5) {
+        trackLastFmScrobbled = true;
+        if (window.api && window.api.lastFmScrobble) {
+          window.api.lastFmScrobble(currentTrack, trackLastFmPlaybackStart).then(res => {
+            if (res && res.success) {
+              showToast(`Scrobbled на Last.fm: ${res.artist} - ${res.title}`);
+            }
+          }).catch(() => {});
+        }
+      }
+    }
+
     // Auto-refill Cyber Wave Queue
     if (isWaveMode && queueIndex >= queue.length - 4 && !isWaveFetching) {
       expandWavePoolAndRefillQueue();
@@ -2333,8 +3157,9 @@
       showToast('Ищу треки для запуска Волны...');
       try {
         const fallbackSearch = await window.api.searchTracks('rap phonk electronic', 'soundcloud');
-        if (fallbackSearch && fallbackSearch.length > 0) {
-          seed = fallbackSearch[0];
+        const fallbackList = Array.isArray(fallbackSearch) ? fallbackSearch : (fallbackSearch?.tracks || []);
+        if (fallbackList && fallbackList.length > 0) {
+          seed = fallbackList[0];
         }
       } catch (e) {}
     }
@@ -2545,11 +3370,56 @@
 
   // Keyboard Shortcuts
   window.addEventListener('keydown', (e) => {
+    // Hotkey: Ctrl+Shift+L only in lyrics view and only when lyrics not found (or modal open)
+    const isLKey = e.code === 'KeyL' || (e.key && e.key.toLowerCase() === 'l') || (e.key && e.key.toLowerCase() === 'д');
+    if (e.ctrlKey && e.shiftKey && isLKey) {
+      if (isLyricsOpen && (isLyricsNotFound || (manualLyricsModal && manualLyricsModal.style.display !== 'none'))) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (manualLyricsModal && manualLyricsModal.style.display !== 'none') {
+          closeManualLyricsModal();
+        } else {
+          openManualLyricsModal();
+        }
+        return;
+      }
+    }
+
+    if (manualLyricsModal && manualLyricsModal.style.display !== 'none') {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeManualLyricsModal();
+        return;
+      }
+      return;
+    }
+
+    if (playlistPickerModal && playlistPickerModal.style.display !== 'none') {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closePlaylistPicker();
+        return;
+      }
+      return;
+    }
+
+    if (playlistNameModal && playlistNameModal.style.display !== 'none') {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closePlaylistNameModal();
+        return;
+      }
+      return;
+    }
+
     if (e.key === 'Escape' && isLyricsOpen) {
       navigateBack();
       return;
     }
-    if (document.activeElement === searchInput) return;
+    if (document.activeElement === searchInput || 
+        (lyricsManualInput && document.activeElement === lyricsManualInput) ||
+        (inputQuickCreatePlaylist && document.activeElement === inputQuickCreatePlaylist) ||
+        (inputPlaylistModalName && document.activeElement === inputPlaylistModalName)) return;
 
     if (e.code === 'Space') {
       e.preventDefault();

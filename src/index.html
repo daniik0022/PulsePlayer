@@ -95,6 +95,18 @@
           <span>Любимые</span>
           <span class="badge" id="favCount">0</span>
         </button>
+        <button class="nav-item" data-tab="playlists" title="Твои плейлисты">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="8" y1="6" x2="21" y2="6"></line>
+            <line x1="8" y1="12" x2="21" y2="12"></line>
+            <line x1="8" y1="18" x2="21" y2="18"></line>
+            <line x1="3" y1="6" x2="3.01" y2="6"></line>
+            <line x1="3" y1="12" x2="3.01" y2="12"></line>
+            <line x1="3" y1="18" x2="3.01" y2="18"></line>
+          </svg>
+          <span>Плейлисты</span>
+          <span class="badge" id="playlistsCount">0</span>
+        </button>
         <button class="nav-item" data-tab="local" title="Локальные аудиофайлы">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M9 18V5l12-2v13"></path>
@@ -219,6 +231,13 @@
           </div>
 
           <div class="tracks-list" id="tracksList"></div>
+
+          <div class="search-more-container" id="searchMoreContainer" style="display:none;">
+            <button class="btn-load-more" id="btnSearchLoadMore">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+              <span id="searchLoadMoreText">Загрузить ещё 25</span>
+            </button>
+          </div>
         </div>
       </section>
 
@@ -363,6 +382,10 @@
                   <span id="btnSaveLyricsQueryText">Запомнить</span>
                 </button>
               </div>
+              <button class="lyrics-format-pill" id="btnToggleLyricsFormat" style="display:none;" title="Переключить между караоке и обычным текстом">
+                <span class="format-dot"></span>
+                <span id="lyricsFormatLabel">Караоке (LRC)</span>
+              </button>
               <span class="lyrics-source-badge" id="lyricsSourceBadge" style="display:none;">LRCLIB</span>
               <button class="focus-close-btn" id="btnCloseFocusView" title="Вернуться в медиатеку (Esc)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -417,7 +440,31 @@
                 <div class="lyrics-empty" id="lyricsEmpty" style="display:none;">
                   <div class="empty-icon">📝</div>
                   <h3>Текст не найден</h3>
-                  <p>Для этого трека пока нет текста в базе. Попробуй уточнить название в поиске выше.</p>
+                  <p>Для этого трека пока нет текста в базе. Попробуй уточнить название в поиске выше или добавь текст вручную.</p>
+                  <button class="btn-manual-lyrics-add" id="btnOpenManualLyrics" title="Добавить текст для этого трека">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                    <span>Добавить текст вручную (Ctrl+Shift+L)</span>
+                  </button>
+                </div>
+                <div class="manual-lyrics-modal" id="manualLyricsModal" style="display:none;">
+                  <div class="manual-lyrics-card">
+                    <div class="manual-lyrics-header">
+                      <div class="manual-lyrics-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                        <span>ДОБАВЛЕНИЕ ТЕКСТА ПЕСНИ</span>
+                      </div>
+                      <button class="manual-lyrics-close" id="btnCloseManualLyrics" title="Закрыть (Esc)">✕</button>
+                    </div>
+                    <p class="manual-lyrics-hint">Вставь обычный текст или LRC с таймкодами (например: <code>[00:15.30] Текст</code>) для синхронизированного караоке.</p>
+                    <textarea id="manualLyricsTextarea" class="manual-lyrics-textarea" placeholder="Вставь сюда текст песни..."></textarea>
+                    <div class="manual-lyrics-actions">
+                      <button id="btnCancelManualLyrics" class="btn-manual-secondary">Отмена (Esc)</button>
+                      <button id="btnSaveManualLyrics" class="btn-manual-primary">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        <span>Сохранить текст (Ctrl+Enter)</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
                 <div class="lyrics-content" id="lyricsContent"></div>
               </div>
@@ -473,6 +520,67 @@
               <!-- Dynamically populated -->
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- 5. PLAYLISTS OVERVIEW (Spotify Grid) -->
+      <section class="view-panel" id="viewPlaylists" style="display:none;">
+        <div class="playlists-hero-card">
+          <div class="playlists-hero-content">
+            <span class="hero-tag">⚡ CYBER HUBS // USER COLLECTIONS</span>
+            <h1>Твои плейлисты</h1>
+            <p>Создавай собственные подборки, группируй треки по вайбу и жанрам, слушай в один клик.</p>
+          </div>
+          <div class="playlists-hero-actions">
+            <button class="btn-create-playlist-hero" id="btnCreatePlaylistHero">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              <span>Создать плейлист</span>
+            </button>
+          </div>
+          <div class="hero-glow"></div>
+        </div>
+
+        <div class="playlists-grid" id="playlistsGrid">
+          <!-- Populated dynamically -->
+        </div>
+      </section>
+
+      <!-- 6. PLAYLIST DETAIL VIEW (Opened Playlist) -->
+      <section class="view-panel" id="viewPlaylistDetail" style="display:none;">
+        <div class="playlist-detail-banner" id="playlistBanner">
+          <div class="playlist-banner-overlay"></div>
+          <div class="playlist-banner-content">
+            <div class="playlist-banner-cover" id="playlistDetailCover">
+              <!-- Dynamically populated collage or icon -->
+            </div>
+            <div class="playlist-banner-info">
+              <span class="playlist-banner-tag">ПЛЕЙЛИСТ</span>
+              <h1 class="playlist-banner-title" id="playlistDetailTitle">Название плейлиста</h1>
+              <p class="playlist-banner-meta" id="playlistDetailMeta">0 треков • 0 мин</p>
+              <div class="playlist-banner-actions">
+                <button class="btn-playlist-play" id="btnPlayPlaylist">
+                  <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 18 12 6 20 6 4"></polygon></svg>
+                  <span>Слушать</span>
+                </button>
+                <button class="btn-playlist-shuffle" id="btnShufflePlaylist" title="Перемешать плейлист">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
+                  <span>Перемешать</span>
+                </button>
+                <button class="btn-playlist-action" id="btnRenamePlaylist" title="Переименовать">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                  <span>Переименовать</span>
+                </button>
+                <button class="btn-playlist-action btn-danger" id="btnDeletePlaylist" title="Удалить плейлист">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                  <span>Удалить</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tracks-container">
+          <div class="tracks-list" id="playlistTracksList"></div>
         </div>
       </section>
     </main>
@@ -629,6 +737,65 @@
       <p>Импорт MP3, WAV, FLAC, OGG, M4A, AAC</p>
     </div>
   </div>
+
+  <!-- Modal: Playlist Picker (Add Track to Playlist) -->
+  <div class="cyber-modal-overlay" id="playlistPickerModal" style="display:none;">
+    <div class="cyber-modal-card playlist-picker-card">
+      <div class="cyber-modal-header">
+        <div class="modal-title-row">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span>ДОБАВИТЬ В ПЛЕЙЛИСТ</span>
+        </div>
+        <button class="btn-modal-close" id="btnClosePlaylistPicker">&times;</button>
+      </div>
+
+      <!-- Mini track preview -->
+      <div class="picker-track-preview" id="pickerTrackPreview">
+        <div class="picker-track-art" id="pickerTrackArt">♪</div>
+        <div class="picker-track-info">
+          <div class="picker-track-title" id="pickerTrackTitle">—</div>
+          <div class="picker-track-artist" id="pickerTrackArtist">—</div>
+        </div>
+      </div>
+
+      <!-- Quick create bar -->
+      <div class="picker-quick-create">
+        <input type="text" id="inputQuickCreatePlaylist" placeholder="Новый плейлист..." maxlength="60" autocomplete="off">
+        <button id="btnQuickCreatePlaylist" class="btn-quick-create">Создать</button>
+      </div>
+
+      <!-- Playlists list -->
+      <div class="picker-playlists-list" id="pickerPlaylistsList">
+        <!-- Rendered dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Create / Rename Playlist -->
+  <div class="cyber-modal-overlay" id="playlistNameModal" style="display:none;">
+    <div class="cyber-modal-card playlist-name-card">
+      <div class="cyber-modal-header">
+        <div class="modal-title-row">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+          </svg>
+          <span id="playlistNameModalTitle">НОВЫЙ ПЛЕЙЛИСТ</span>
+        </div>
+        <button class="btn-modal-close" id="btnClosePlaylistNameModal">&times;</button>
+      </div>
+      <div class="cyber-modal-body">
+        <label class="modal-input-label" for="inputPlaylistModalName">Название</label>
+        <input type="text" id="inputPlaylistModalName" class="modal-text-input" placeholder="Например: Ночной фонк..." maxlength="60" autocomplete="off">
+      </div>
+      <div class="cyber-modal-actions">
+        <button class="btn-modal-secondary" id="btnCancelPlaylistNameModal">Отмена</button>
+        <button class="btn-modal-primary" id="btnSubmitPlaylistNameModal">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
   <audio id="audioElement" crossorigin="anonymous"></audio>
 
   <script src="renderer.js"></script>

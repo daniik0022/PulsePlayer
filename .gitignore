@@ -9,6 +9,7 @@ out/
 
 # Local data & caches
 favorites_backup.json
+playlists_backup.json
 config.json
 
 # Local logs & dev notes
