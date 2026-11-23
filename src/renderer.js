@@ -201,6 +201,8 @@
   const btnCloseLyrics = document.getElementById('btnCloseLyrics');
   const lyricsManualInput = document.getElementById('lyricsManualInput');
   const btnSearchLyricsManual = document.getElementById('btnSearchLyricsManual');
+  const btnSaveLyricsQuery = document.getElementById('btnSaveLyricsQuery');
+  const btnSaveLyricsQueryText = document.getElementById('btnSaveLyricsQueryText');
   const lyricsScrollContainer = document.getElementById('lyricsScrollContainer');
   const lyricsLoader = document.getElementById('lyricsLoader');
   const lyricsEmpty = document.getElementById('lyricsEmpty');
@@ -227,12 +229,34 @@
   let isDiscordRpcEnabled = localStorage.getItem('pulse_discord_rpc') !== 'false';
   let lastDiscordSyncTime = 0;
 
-  // Lyrics State
+  // Lyrics State & Persistent Track Search Query Binding
   let isLyricsOpen = false;
   let parsedLyrics = [];
   let isSyncedLyrics = false;
   let currentLyricsTrackId = null;
   let currentActiveLyricIndex = -1;
+  let savedLyricsQueries = safeParseLS('pulse_lyrics_queries', {});
+
+  function getSavedLyricsQuery(track) {
+    if (!track) return null;
+    const idKey = String(track.id);
+    const normKey = `${(track.artist || '').toLowerCase().trim()}:::${(track.title || '').toLowerCase().trim()}`;
+    return savedLyricsQueries[idKey] || savedLyricsQueries[normKey] || null;
+  }
+
+  function setSavedLyricsQuery(track, query) {
+    if (!track) return;
+    const idKey = String(track.id);
+    const normKey = `${(track.artist || '').toLowerCase().trim()}:::${(track.title || '').toLowerCase().trim()}`;
+    if (query) {
+      savedLyricsQueries[idKey] = query;
+      savedLyricsQueries[normKey] = query;
+    } else {
+      delete savedLyricsQueries[idKey];
+      delete savedLyricsQueries[normKey];
+    }
+    localStorage.setItem('pulse_lyrics_queries', JSON.stringify(savedLyricsQueries));
+  }
 
   function parseLRC(text) {
     if (!text) return [];
@@ -275,8 +299,28 @@
       }
     }
 
+    const savedQuery = getSavedLyricsQuery(currentTrack);
+    const effectiveQuery = forceQuery !== null ? forceQuery : (savedQuery || null);
+
+    if (savedQuery) {
+      lyricsManualInput.value = savedQuery;
+      if (btnSaveLyricsQuery) {
+        btnSaveLyricsQuery.classList.add('active');
+        if (btnSaveLyricsQueryText) btnSaveLyricsQueryText.textContent = 'Запомнено';
+        btnSaveLyricsQuery.title = `Название сохранено за треком (${savedQuery}). Клик — сбросить`;
+      }
+    } else {
+      if (!forceQuery) {
+        lyricsManualInput.value = `${currentTrack.artist} ${currentTrack.title}`;
+      }
+      if (btnSaveLyricsQuery) {
+        btnSaveLyricsQuery.classList.remove('active');
+        if (btnSaveLyricsQueryText) btnSaveLyricsQueryText.textContent = 'Запомнить';
+        btnSaveLyricsQuery.title = 'Запомнить это название для текущей песни';
+      }
+    }
+
     if (!forceQuery) {
-      lyricsManualInput.value = `${currentTrack.artist} ${currentTrack.title}`;
       if (currentLyricsTrackId === currentTrack.id && (parsedLyrics.length > 0 || lyricsContent.innerHTML)) {
         return;
       }
@@ -292,8 +336,8 @@
 
     try {
       let data = null;
-      if (forceQuery) {
-        data = await window.api.searchLyricsQuery(forceQuery);
+      if (effectiveQuery) {
+        data = await window.api.searchLyricsQuery(effectiveQuery);
       } else {
         data = await window.api.getLyrics(currentTrack);
       }
@@ -351,16 +395,63 @@
     }
   }
 
+  if (btnSaveLyricsQuery) {
+    btnSaveLyricsQuery.addEventListener('click', () => {
+      if (!currentTrack) return;
+      const currentSaved = getSavedLyricsQuery(currentTrack);
+      const inputVal = lyricsManualInput.value.trim();
+
+      if (currentSaved) {
+        setSavedLyricsQuery(currentTrack, null);
+        btnSaveLyricsQuery.classList.remove('active');
+        if (btnSaveLyricsQueryText) btnSaveLyricsQueryText.textContent = 'Запомнить';
+        btnSaveLyricsQuery.title = 'Запомнить это название для текущей песни';
+        lyricsManualInput.value = `${currentTrack.artist} ${currentTrack.title}`;
+        showToast('Поисковое название сброшено к оригинальному');
+        loadLyrics();
+      } else {
+        if (!inputVal) {
+          showToast('Введи название трека');
+          return;
+        }
+        setSavedLyricsQuery(currentTrack, inputVal);
+        btnSaveLyricsQuery.classList.add('active');
+        if (btnSaveLyricsQueryText) btnSaveLyricsQueryText.textContent = 'Запомнено';
+        btnSaveLyricsQuery.title = `Название сохранено за треком (${inputVal}). Клик — сбросить`;
+        showToast(`Название "${inputVal}" закреплено за треком`);
+        loadLyrics(inputVal);
+      }
+    });
+  }
+
   lyricsManualInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       const q = lyricsManualInput.value.trim();
-      if (q) loadLyrics(q);
+      if (q) {
+        setSavedLyricsQuery(currentTrack, q);
+        if (btnSaveLyricsQuery) {
+          btnSaveLyricsQuery.classList.add('active');
+          if (btnSaveLyricsQueryText) btnSaveLyricsQueryText.textContent = 'Запомнено';
+          btnSaveLyricsQuery.title = `Название сохранено за треком (${q}). Клик — сбросить`;
+        }
+        showToast(`Ищем и запоминаем: "${q}"`);
+        loadLyrics(q);
+      }
     }
   });
 
   btnSearchLyricsManual.addEventListener('click', () => {
     const q = lyricsManualInput.value.trim();
-    if (q) loadLyrics(q);
+    if (q) {
+      setSavedLyricsQuery(currentTrack, q);
+      if (btnSaveLyricsQuery) {
+        btnSaveLyricsQuery.classList.add('active');
+        if (btnSaveLyricsQueryText) btnSaveLyricsQueryText.textContent = 'Запомнено';
+        btnSaveLyricsQuery.title = `Название сохранено за треком (${q}). Клик — сбросить`;
+      }
+      showToast(`Ищем и запоминаем: "${q}"`);
+      loadLyrics(q);
+    }
   });
 
   function toggleLyrics() {

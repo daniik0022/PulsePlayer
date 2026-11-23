@@ -2322,9 +2322,9 @@ body::after {
   background: rgba(8, 12, 20, 0.85);
   border: 1px solid rgba(0, 240, 255, 0.25);
   border-radius: 4px;
-  padding: 4px 8px 4px 16px;
+  padding: 4px 8px 4px 14px;
   gap: 8px;
-  width: 260px;
+  width: 320px;
   transition: all 0.25s var(--ease-cyber);
 }
 
@@ -2332,7 +2332,52 @@ body::after {
   background: rgba(12, 18, 30, 0.95);
   border-color: var(--neon-cyan);
   box-shadow: 0 0 16px rgba(0, 240, 255, 0.45);
-  width: 320px;
+  width: 380px;
+}
+
+.btn-save-query {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(0, 240, 255, 0.08);
+  border: 1px solid rgba(0, 240, 255, 0.25) !important;
+  color: var(--neon-cyan);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px !important;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition: all 0.2s var(--ease-cyber);
+}
+
+.btn-save-query svg {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+.btn-save-query:hover {
+  background: rgba(0, 240, 255, 0.2);
+  border-color: var(--neon-cyan) !important;
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+  color: #fff;
+}
+
+.btn-save-query.active {
+  background: rgba(0, 240, 255, 0.22);
+  border-color: var(--neon-cyan) !important;
+  color: #00f0ff;
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.45);
+}
+
+.btn-save-query.active:hover {
+  background: rgba(255, 0, 85, 0.2);
+  border-color: var(--neon-magenta) !important;
+  color: var(--neon-magenta);
+  box-shadow: 0 0 12px rgba(255, 0, 85, 0.45);
 }
 
 .lyrics-search-box input {
