@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const discordRpc = require('./discordRpc');
 
@@ -265,6 +266,128 @@ async function getRelatedTracks(trackId, limit = 25) {
       return [];
     }
   }
+}
+
+function parseAudioFile(filePath) {
+  if (!filePath) return null;
+  try {
+    if (!fs.existsSync(filePath)) return null;
+  } catch (e) {
+    return null;
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  const validExts = ['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.opus', '.wma'];
+  if (!validExts.includes(ext)) return null;
+
+  const baseName = path.basename(filePath, ext);
+  let artist = 'Локальный трек';
+  let title = baseName;
+  let artworkUrl = '';
+
+  if (baseName.includes(' - ')) {
+    const parts = baseName.split(' - ');
+    artist = parts[0].trim();
+    title = parts.slice(1).join(' - ').trim();
+  }
+
+  // ID3 tag extraction for MP3 / Audio
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const headerBuf = Buffer.alloc(10);
+    fs.readSync(fd, headerBuf, 0, 10, 0);
+
+    if (headerBuf.toString('ascii', 0, 3) === 'ID3') {
+      const ver = headerBuf[3];
+      const tagSize = ((headerBuf[6] & 0x7f) << 21) |
+                      ((headerBuf[7] & 0x7f) << 14) |
+                      ((headerBuf[8] & 0x7f) << 7) |
+                      (headerBuf[9] & 0x7f);
+
+      const maxRead = Math.min(tagSize, 256 * 1024);
+      const tagBuf = Buffer.alloc(maxRead);
+      fs.readSync(fd, tagBuf, 0, maxRead, 10);
+
+      let offset = 0;
+      while (offset < maxRead - 10) {
+        const frameId = tagBuf.toString('ascii', offset, offset + 4);
+        if (!/^[A-Z0-9]{4}$/.test(frameId)) break;
+
+        let frameSize = 0;
+        if (ver === 4) {
+          frameSize = ((tagBuf[offset + 4] & 0x7f) << 21) |
+                      ((tagBuf[offset + 5] & 0x7f) << 14) |
+                      ((tagBuf[offset + 6] & 0x7f) << 7) |
+                      (tagBuf[offset + 7] & 0x7f);
+        } else {
+          frameSize = tagBuf.readUInt32BE(offset + 4);
+        }
+
+        if (frameSize <= 0 || offset + 10 + frameSize > maxRead) break;
+        const frameData = tagBuf.slice(offset + 10, offset + 10 + frameSize);
+
+        const decodeText = (buf) => {
+          if (buf.length < 2) return '';
+          const enc = buf[0];
+          const content = buf.slice(1);
+          if (enc === 0) return content.toString('latin1').replace(/\0/g, '').trim();
+          if (enc === 1) return content.toString('utf16le').replace(/\0/g, '').trim();
+          if (enc === 2) return content.toString('utf16be').replace(/\0/g, '').trim();
+          if (enc === 3) return content.toString('utf8').replace(/\0/g, '').trim();
+          return content.toString('utf8').replace(/\0/g, '').trim();
+        };
+
+        if (frameId === 'TIT2') {
+          const t = decodeText(frameData);
+          if (t) title = t;
+        } else if (frameId === 'TPE1') {
+          const a = decodeText(frameData);
+          if (a) artist = a;
+        } else if (frameId === 'APIC' && !artworkUrl && frameSize < 1024 * 1024) {
+          try {
+            const enc = frameData[0];
+            let pos = 1;
+            while (pos < frameData.length && frameData[pos] !== 0) pos++;
+            const mime = frameData.toString('ascii', 1, pos) || 'image/jpeg';
+            pos++; // skip null
+            if (pos < frameData.length) {
+              pos++; // skip type
+              if (enc === 1 || enc === 2) {
+                while (pos < frameData.length - 1 && !(frameData[pos] === 0 && frameData[pos + 1] === 0)) pos += 2;
+                pos += 2;
+              } else {
+                while (pos < frameData.length && frameData[pos] !== 0) pos++;
+                pos++;
+              }
+              if (pos < frameData.length) {
+                const imgBuf = frameData.slice(pos);
+                artworkUrl = `data:${mime};base64,${imgBuf.toString('base64')}`;
+              }
+            }
+          } catch (e) {}
+        }
+
+        offset += 10 + frameSize;
+      }
+    }
+    fs.closeSync(fd);
+  } catch (e) {}
+
+  const hash = crypto.createHash('md5').update(filePath.toLowerCase()).digest('hex').slice(0, 12);
+
+  return {
+    id: 'local_' + hash,
+    source: 'local',
+    title: title || baseName,
+    artist: artist || 'Локальный трек',
+    filePath,
+    durationMs: 0,
+    artworkUrl,
+    permalinkUrl: '',
+    playbackCount: 0,
+    likesCount: 0,
+    transcodings: []
+  };
 }
 
 async function resolveSoundCloudStream(track) {
@@ -783,8 +906,61 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('resolve-stream', async (_, track) => {
+    if (track.source === 'local') {
+      const p = track.filePath || '';
+      const fileUrl = p.startsWith('file://') ? p : `file:///${p.replace(/\\/g, '/')}`;
+      return {
+        streamUrl: fileUrl,
+        protocol: 'progressive',
+        mimeType: 'audio/mpeg'
+      };
+    }
     if (track.source === 'youtube') return await resolveYouTubeStream(track);
     return await resolveSoundCloudStream(track);
+  });
+
+  ipcMain.handle('open-local-files', async () => {
+    if (!mainWindow) return [];
+    const res = await dialog.showOpenDialog(mainWindow, {
+      title: 'Импорт аудиофайлов в PulsePlayer',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Аудиофайлы (*.mp3, *.wav, *.ogg, *.flac, *.m4a, *.aac)', extensions: ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus', 'wma'] },
+        { name: 'Все файлы', extensions: ['*'] }
+      ]
+    });
+    if (res.canceled || !res.filePaths || !res.filePaths.length) return [];
+    return res.filePaths.map(parseAudioFile).filter(Boolean);
+  });
+
+  ipcMain.handle('parse-local-file-paths', async (_, filePaths) => {
+    if (!Array.isArray(filePaths)) return [];
+    return filePaths.map(parseAudioFile).filter(Boolean);
+  });
+
+  ipcMain.handle('get-local-tracks-backup', () => {
+    try {
+      const p = path.join(app.getPath('userData'), 'local_tracks.json');
+      if (fs.existsSync(p)) {
+        return JSON.parse(fs.readFileSync(p, 'utf8'));
+      }
+    } catch (e) {
+      console.warn('Failed to read local tracks backup:', e);
+    }
+    return [];
+  });
+
+  ipcMain.handle('save-local-tracks-backup', async (_, tracks) => {
+    if (!Array.isArray(tracks)) return false;
+    try {
+      const p = path.join(app.getPath('userData'), 'local_tracks.json');
+      fs.writeFileSync(p + '.tmp', JSON.stringify(tracks, null, 2), 'utf8');
+      fs.renameSync(p + '.tmp', p);
+      return true;
+    } catch (e) {
+      console.warn('Failed to save local tracks backup:', e);
+      return false;
+    }
   });
 
   ipcMain.handle('download-track', async (_, track) => {
@@ -805,8 +981,57 @@ app.whenReady().then(async () => {
     return dir;
   });
 
-  // Discord RPC Handlers
+  // Discord RPC Handlers & Online Artwork Cache
+  const artworkCache = new Map();
+
+  async function resolveOnlineArtwork(track) {
+    if (!track) return null;
+    const cleanArtist = (track.artist || '').replace(/\s*\(.*\)/g, '').trim();
+    const cleanTitle = (track.title || '').replace(/\s*\(.*\)/g, '').trim();
+    const key = `${cleanArtist.toLowerCase()}:::${cleanTitle.toLowerCase()}`;
+    if (artworkCache.has(key)) return artworkCache.get(key);
+
+    const query = `${cleanArtist} ${cleanTitle}`.trim();
+    if (!query || query.length < 2) return null;
+
+    try {
+      const raw = await fetchUrl(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=1`, {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+      });
+      const json = JSON.parse(raw);
+      if (json.results && json.results.length > 0) {
+        const art = json.results[0].artworkUrl100 ? json.results[0].artworkUrl100.replace('100x100bb', '512x512bb') : null;
+        if (art && art.startsWith('http')) {
+          artworkCache.set(key, art);
+          return art;
+        }
+      }
+    } catch (e) {}
+
+    artworkCache.set(key, null);
+    return null;
+  }
+
   ipcMain.handle('update-discord-rpc', async (_, data) => {
+    if (data && data.track && (!data.track.artworkUrl || !data.track.artworkUrl.startsWith('http'))) {
+      const cleanArtist = (data.track.artist || '').replace(/\s*\(.*\)/g, '').trim();
+      const cleanTitle = (data.track.title || '').replace(/\s*\(.*\)/g, '').trim();
+      const key = `${cleanArtist.toLowerCase()}:::${cleanTitle.toLowerCase()}`;
+
+      if (artworkCache.has(key)) {
+        const cached = artworkCache.get(key);
+        if (cached) data.track.remoteArtworkUrl = cached;
+      } else {
+        // Resolve online cover in background without blocking RPC delivery
+        resolveOnlineArtwork(data.track).then(art => {
+          if (art && discordRpc.lastState?.track && discordRpc.lastState.track.id === data.track.id) {
+            discordRpc.lastState.track.remoteArtworkUrl = art;
+            discordRpc.updateActivity(discordRpc.lastState).catch(() => {});
+          }
+        }).catch(() => {});
+      }
+    }
+
     await discordRpc.updateActivity(data);
     return discordRpc.getStatus();
   });

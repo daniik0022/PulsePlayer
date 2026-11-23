@@ -210,7 +210,24 @@
   const btnDownloadCurrent = document.getElementById('btnDownloadCurrent');
   const btnOpenDownloads = document.getElementById('btnOpenDownloads');
   const favCountEl = document.getElementById('favCount');
+  const localCountEl = document.getElementById('localCount');
   const queueCountEl = document.getElementById('queueCount');
+  const btnImportHeader = document.getElementById('btnImportHeader');
+  const btnImportHome = document.getElementById('btnImportHome');
+  const dragDropOverlay = document.getElementById('dragDropOverlay');
+  let localTracks = safeParseLS('pulse_local_tracks', []);
+
+  if (window.api?.getLocalTracksBackup) {
+    window.api.getLocalTracksBackup().then(backup => {
+      if (Array.isArray(backup) && backup.length > 0) {
+        if (!localTracks.length || backup.length > localTracks.length) {
+          localTracks = backup;
+          localStorage.setItem('pulse_local_tracks', JSON.stringify(localTracks));
+          updateBadgeCounts();
+        }
+      }
+    }).catch(() => {});
+  }
   const toast = document.getElementById('toast');
   const canvas = document.getElementById('visualizerCanvas');
   const canvasCtx = canvas.getContext('2d');
@@ -573,8 +590,106 @@
 
   function updateBadgeCounts() {
     if (favCountEl) favCountEl.textContent = favorites.length;
+    if (localCountEl) localCountEl.textContent = localTracks.length;
     if (queueCountEl) queueCountEl.textContent = queue.length;
   }
+
+  function saveLocalTracks() {
+    localStorage.setItem('pulse_local_tracks', JSON.stringify(localTracks));
+    if (window.api && window.api.saveLocalTracksBackup) {
+      window.api.saveLocalTracksBackup(localTracks).catch(() => {});
+    }
+    updateBadgeCounts();
+  }
+
+  async function importLocalTracks() {
+    try {
+      if (!window.api || !window.api.openLocalFiles) return;
+      const imported = await window.api.openLocalFiles();
+      if (!imported || !imported.length) return;
+      addImportedTracks(imported);
+    } catch (err) {
+      console.error('Import error:', err);
+      showToast(`Ошибка импорта: ${err.message}`);
+    }
+  }
+
+  function addImportedTracks(newTracks) {
+    if (!Array.isArray(newTracks) || !newTracks.length) return;
+    let addedCount = 0;
+    newTracks.forEach(nt => {
+      const exists = localTracks.some(lt => lt.id === nt.id || (lt.filePath && lt.filePath.toLowerCase() === nt.filePath?.toLowerCase()));
+      if (!exists) {
+        localTracks.push(nt);
+        addedCount++;
+      }
+    });
+
+    if (addedCount > 0) {
+      saveLocalTracks();
+      showToast(`Импортировано треков: ${addedCount}`);
+      const activeTab = document.querySelector('.nav-item.active')?.dataset.tab;
+      if (activeTab === 'local') {
+        handleSidebarTab('local');
+      }
+    } else {
+      showToast('Выбранные треки уже есть в списке');
+    }
+  }
+
+  if (btnImportHeader) btnImportHeader.addEventListener('click', importLocalTracks);
+  if (btnImportHome) btnImportHome.addEventListener('click', importLocalTracks);
+
+  // Drag & Drop Audio Files onto Window
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragDepth++;
+    if (dragDropOverlay) dragDropOverlay.style.display = 'flex';
+  });
+
+  window.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+
+  window.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    dragDepth--;
+    if (dragDepth <= 0) {
+      dragDepth = 0;
+      if (dragDropOverlay) dragDropOverlay.style.display = 'none';
+    }
+  });
+
+  window.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    if (dragDropOverlay) dragDropOverlay.style.display = 'none';
+
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (!files.length) return;
+
+    const paths = files.map(f => {
+      if (window.api && typeof window.api.getPathForFile === 'function') {
+        return window.api.getPathForFile(f);
+      }
+      return f.path || '';
+    }).filter(Boolean);
+
+    if (paths.length > 0 && window.api && window.api.parseLocalFilePaths) {
+      try {
+        const parsed = await window.api.parseLocalFilePaths(paths);
+        if (parsed && parsed.length > 0) {
+          addImportedTracks(parsed);
+        } else {
+          showToast('Не найдено поддерживаемых аудиофайлов');
+        }
+      } catch (err) {
+        showToast(`Ошибка добавления файлов: ${err.message}`);
+      }
+    }
+  });
 
   // Window Controls
   document.getElementById('btnMinimize').addEventListener('click', () => window.api.minimize());
@@ -621,6 +736,7 @@
     viewArtist.style.display = 'none';
     if (viewLyrics) viewLyrics.style.display = 'none';
     if (viewStats) viewStats.style.display = 'none';
+    if (btnImportHeader) btnImportHeader.style.display = 'none';
 
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
 
@@ -638,6 +754,32 @@
       if (!searchInput.value.trim()) {
         searchInitialState.style.display = 'flex';
         tracksList.style.display = 'none';
+      }
+    } else if (viewName === 'local') {
+      viewSearch.style.display = 'flex';
+      const nav = document.querySelector('.nav-item[data-tab="local"]');
+      if (nav) nav.classList.add('active');
+      viewTitle.textContent = 'Мои треки';
+      document.getElementById('sourceSelector').style.display = 'none';
+      if (btnImportHeader) btnImportHeader.style.display = 'inline-flex';
+      searchInitialState.style.display = 'none';
+      searchLoader.style.display = 'none';
+      tracksList.style.display = 'flex';
+      resultsCount.textContent = `${localTracks.length} треков`;
+      if (!localTracks.length) {
+        tracksList.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">📁</div>
+            <h3>Локальных треков пока нет</h3>
+            <p>Импортируй любимые аудиофайлы с диска или просто перетащи их в окно плеера</p>
+            <button class="btn-import-empty" id="btnImportEmpty">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              <span>Выбрать файлы</span>
+            </button>
+          </div>`;
+        document.getElementById('btnImportEmpty')?.addEventListener('click', importLocalTracks);
+      } else {
+        renderTrackRows(localTracks, tracksList);
       }
     } else if (viewName === 'favorites') {
       viewSearch.style.display = 'flex';
@@ -772,7 +914,7 @@
 
       card.innerHTML = `
         <div class="card-artwork-box">
-          <img src="${t.artworkUrl || ''}" alt="Cover" loading="lazy">
+          ${t.artworkUrl ? `<img src="${t.artworkUrl}" alt="Cover" loading="lazy">` : `<div class="artwork-fallback" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:2.2rem;background:#0d121f;color:var(--neon-cyan);">♪</div>`}
           <button class="card-play-btn" title="Слушать">
             <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 18 12 6 20 6 4"></polygon></svg>
           </button>
@@ -800,6 +942,10 @@
       // Click artist
       card.querySelector('.card-artist').addEventListener('click', (e) => {
         e.stopPropagation();
+        if (t.source === 'local') {
+          showToast(`Исполнитель: ${t.artist}`);
+          return;
+        }
         if (t.artistId) {
           openArtistProfile(t.artistId);
         } else if (t.artist) {
@@ -1229,14 +1375,21 @@
       searchLoader.style.display = 'none';
       tracksList.style.display = 'flex';
 
-      if (!results || results.length === 0) {
+      const qLower = query.toLowerCase().trim();
+      const matchedLocal = localTracks.filter(lt =>
+        (lt.title && lt.title.toLowerCase().includes(qLower)) ||
+        (lt.artist && lt.artist.toLowerCase().includes(qLower))
+      );
+      const combined = [...matchedLocal, ...(results || [])];
+
+      if (!combined || combined.length === 0) {
         tracksList.innerHTML = `<div class="empty-state"><h3>Ничего не найдено</h3><p>Попробуй изменить поисковый запрос</p></div>`;
         resultsCount.textContent = '0 треков';
         return;
       }
 
-      resultsCount.textContent = `${results.length} треков`;
-      renderTrackRows(results, tracksList);
+      resultsCount.textContent = `${combined.length} треков`;
+      renderTrackRows(combined, tracksList);
     } catch (err) {
       searchLoader.style.display = 'none';
       tracksList.style.display = 'flex';
@@ -1291,10 +1444,14 @@
     tracks.forEach((t, idx) => {
       const isFav = favorites.some(f => f.id === t.id);
       const isCurrent = currentTrack && currentTrack.id === t.id;
+      const isLocal = t.source === 'local';
 
       const row = document.createElement('div');
       row.className = `track-row ${isCurrent ? 'playing' : ''}`;
       row.dataset.id = t.id;
+
+      const sourceLabel = isLocal ? 'LOCAL' : (t.source === 'soundcloud' ? 'SC' : 'YT');
+      const badgeClass = isLocal ? 'row-source-badge badge-local' : 'row-source-badge';
 
       row.innerHTML = `
         <div class="row-index">
@@ -1314,28 +1471,39 @@
           <div class="row-title" title="${esc(t.title)}">${esc(t.title)}</div>
           <div class="row-meta">
             <span class="row-artist-link" title="Открыть автора">${esc(t.artist)}</span>
-            <span class="row-source-badge">${t.source === 'soundcloud' ? 'SC' : 'YT'}</span>
+            <span class="${badgeClass}">${sourceLabel}</span>
           </div>
         </div>
         <div class="row-actions">
-          <button class="btn-icon-action btn-row-wave" title="Запустить Волну от этого трека">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M2 12c2.5-4 5-4 7.5 0s5 4 7.5 0 5-4 7 0"></path>
-              <path d="M2 17c2.5-3 5-3 7.5 0s5 3 7.5 0 5-3 7 0"></path>
-            </svg>
-          </button>
+          ${isLocal ? '' : `
+            <button class="btn-icon-action btn-row-wave" title="Запустить Волну от этого трека">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M2 12c2.5-4 5-4 7.5 0s5 4 7.5 0 5-4 7 0"></path>
+                <path d="M2 17c2.5-3 5-3 7.5 0s5 3 7.5 0 5-3 7 0"></path>
+              </svg>
+            </button>
+          `}
           <button class="btn-icon-action btn-fav ${isFav ? 'liked' : ''}" title="${isFav ? 'Убрать из любимых' : 'В любимые'}">
             <svg viewBox="0 0 24 24" fill="${isFav ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
               <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
             </svg>
           </button>
-          <button class="btn-icon-action btn-download" title="Скачать MP3">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="7 10 12 15 17 10"></polyline>
-              <line x1="12" y1="15" x2="12" y2="3"></line>
-            </svg>
-          </button>
+          ${isLocal ? `
+            <button class="btn-icon-action btn-delete-local" title="Убрать из списка локальных треков">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          ` : `
+            <button class="btn-icon-action btn-download" title="Скачать MP3">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+            </button>
+          `}
         </div>
         <div class="row-duration">${formatMs(t.durationMs)}</div>
       `;
@@ -1351,6 +1519,10 @@
       const artistLink = row.querySelector('.row-artist-link');
       artistLink.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (t.source === 'local') {
+          showToast(`Исполнитель: ${t.artist}`);
+          return;
+        }
         if (t.artistId) {
           openArtistProfile(t.artistId);
         } else if (t.artist) {
@@ -1378,10 +1550,26 @@
       });
 
       const downloadBtn = row.querySelector('.btn-download');
-      downloadBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        triggerDownload(t);
-      });
+      if (downloadBtn) {
+        downloadBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          triggerDownload(t);
+        });
+      }
+
+      const delBtn = row.querySelector('.btn-delete-local');
+      if (delBtn) {
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          localTracks = localTracks.filter(lt => lt.id !== t.id);
+          saveLocalTracks();
+          showToast(`Удален из списка: ${t.title}`);
+          const activeTab = document.querySelector('.nav-item.active')?.dataset.tab;
+          if (activeTab === 'local') {
+            handleSidebarTab('local');
+          }
+        });
+      }
 
       targetContainer.appendChild(row);
     });
@@ -1489,7 +1677,7 @@
 
     if (hudAudioRate) {
       const rateKHz = audioCtx?.sampleRate ? (audioCtx.sampleRate / 1000).toFixed(1) : '48.0';
-      const srcTag = track.source === 'youtube' ? 'OPUS' : 'AAC';
+      const srcTag = track.source === 'local' ? 'LOCAL' : (track.source === 'youtube' ? 'OPUS' : 'AAC');
       hudAudioRate.textContent = `${rateKHz} kHz | ${srcTag}`;
     }
 
@@ -1670,6 +1858,23 @@
   });
 
   audio.addEventListener('seeked', () => {
+    syncDiscordPresence(true);
+  });
+
+  audio.addEventListener('loadedmetadata', () => {
+    if (audio.duration && Number.isFinite(audio.duration)) {
+      totalDurationEl.textContent = formatTime(audio.duration);
+      if (currentTrack && currentTrack.source === 'local') {
+        if (!currentTrack.durationMs || currentTrack.durationMs === 0) {
+          currentTrack.durationMs = Math.round(audio.duration * 1000);
+          saveLocalTracks();
+        }
+      }
+      syncDiscordPresence(true);
+    }
+  });
+
+  audio.addEventListener('playing', () => {
     syncDiscordPresence(true);
   });
 
@@ -1915,15 +2120,20 @@
   }
 
   async function startWave(optionalSeed = null) {
+    if (optionalSeed && optionalSeed.source === 'local') {
+      showToast('Моя Волна доступна только для онлайн-треков (SoundCloud)');
+      return;
+    }
     let seed = optionalSeed;
     if (!seed) {
       if (currentTrack && currentTrack.source === 'soundcloud') {
         seed = currentTrack;
       } else if (favorites.length > 0) {
         const scFavs = favorites.filter(f => f.source === 'soundcloud');
-        seed = scFavs.length > 0 ? scFavs[Math.floor(Math.random() * scFavs.length)] : favorites[0];
-      } else {
-        const statTracks = Object.values(playStats.tracks || {});
+        seed = scFavs.length > 0 ? scFavs[Math.floor(Math.random() * scFavs.length)] : null;
+      }
+      if (!seed) {
+        const statTracks = Object.values(playStats.tracks || {}).filter(t => t.source === 'soundcloud');
         if (statTracks.length > 0) seed = statTracks[0];
       }
     }
@@ -2081,11 +2291,15 @@
     if (!force && now - lastDiscordSyncTime < 1500) return;
     lastDiscordSyncTime = now;
 
+    const validAudioDur = (audio.duration && Number.isFinite(audio.duration) && audio.duration > 0) ? audio.duration : 0;
+    const fallbackTrackDur = currentTrack?.durationMs ? (currentTrack.durationMs / 1000) : 0;
+    const dur = validAudioDur || fallbackTrackDur;
+
     window.api.updateDiscordRpc({
       track: currentTrack,
       isPlaying: isPlaying,
       currentTime: audio.currentTime || 0,
-      duration: audio.duration || (currentTrack ? currentTrack.durationSec : 0)
+      duration: dur
     }).catch(err => console.warn('Discord RPC sync failed:', err));
   }
 

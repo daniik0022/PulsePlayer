@@ -16,7 +16,11 @@ if (!fs.existsSync(ELECTRON_DIST)) {
 // 1. Clean or create output directory
 if (fs.existsSync(OUTPUT_DIR)) {
   console.log('[BUILD] Cleaning previous build...');
-  fs.rmSync(OUTPUT_DIR, { recursive: true, force: true });
+  try {
+    fs.rmSync(OUTPUT_DIR, { recursive: true, force: true });
+  } catch (e) {
+    console.warn('[BUILD] Could not clean full output dir (app may be running), updating files in-place...');
+  }
 }
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 

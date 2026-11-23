@@ -96,7 +96,14 @@ class DiscordRpcManager {
 
       const artwork = (track.artworkUrl && track.artworkUrl.startsWith('http')) 
         ? track.artworkUrl 
-        : SC_LOGO_FALLBACK;
+        : ((track.remoteArtworkUrl && track.remoteArtworkUrl.startsWith('http'))
+          ? track.remoteArtworkUrl
+          : SC_LOGO_FALLBACK);
+
+      const isLocal = track.source === 'local';
+      const smallText = isLocal
+        ? (isPlaying ? 'Локальный файл' : 'На паузе')
+        : (isPlaying ? 'Воспроизведение' : 'На паузе');
 
       const activity = {
         type: 2, // 2 = LISTENING ("Слушает SoundCloud")
@@ -104,7 +111,7 @@ class DiscordRpcManager {
         state: isPlaying ? artist : `Paused • ${artist}`,
         largeImageKey: artwork,
         smallImageKey: SC_LOGO_FALLBACK,
-        smallImageText: isPlaying ? 'Воспроизведение' : 'На паузе',
+        smallImageText: smallText,
         instance: false
       };
 
