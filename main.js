@@ -728,26 +728,32 @@ async function searchLrclibFuzzy(query, expectedArtist, expectedTitle) {
 }
 
 async function searchLyricsManual(query) {
-  const cleaned = sanitizeForLyrics(query);
-  if (!cleaned || cleaned.length < 2) return null;
-  try {
-    const searchUrl = `https://lrclib.net/api/search?q=${encodeURIComponent(cleaned)}`;
-    const raw = await fetchUrl(searchUrl, { 'User-Agent': 'PulsePlayer/1.0' });
-    const list = JSON.parse(raw);
-    if (Array.isArray(list) && list.length > 0) {
-      const match = list.find(l => l.syncedLyrics) || list.find(l => l.plainLyrics) || list[0];
-      if (match.syncedLyrics || match.plainLyrics) {
-        return {
-          syncedLyrics: match.syncedLyrics || null,
-          plainLyrics: match.plainLyrics || null,
-          instrumental: !!match.instrumental,
-          artist: match.artistName,
-          track: match.trackName,
-          source: `Поиск: ${match.artistName} - ${match.trackName}`
-        };
+  if (!query || typeof query !== 'string') return null;
+  const rawQ = query.trim();
+  const cleaned = sanitizeForLyrics(rawQ);
+  const queriesToTry = [rawQ, cleaned].filter(q => q && q.length >= 2);
+  const uniqueQueries = [...new Set(queriesToTry)];
+
+  for (const q of uniqueQueries) {
+    try {
+      const searchUrl = `https://lrclib.net/api/search?q=${encodeURIComponent(q)}`;
+      const raw = await fetchUrl(searchUrl, { 'User-Agent': 'PulsePlayer/1.0' });
+      const list = JSON.parse(raw);
+      if (Array.isArray(list) && list.length > 0) {
+        const match = list.find(l => l.syncedLyrics) || list.find(l => l.plainLyrics) || list[0];
+        if (match && (match.syncedLyrics || match.plainLyrics || match.instrumental)) {
+          return {
+            syncedLyrics: match.syncedLyrics || null,
+            plainLyrics: match.plainLyrics || null,
+            instrumental: !!match.instrumental,
+            artist: match.artistName,
+            track: match.trackName,
+            source: match.syncedLyrics ? `LRCLIB (Синхронизирован)` : (match.plainLyrics ? `LRCLIB (Обычный текст)` : `LRCLIB`)
+          };
+        }
       }
-    }
-  } catch (e) {}
+    } catch (e) {}
+  }
   return null;
 }
 
