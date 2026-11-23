@@ -1,0 +1,25 @@
+{
+  "name": "sc-player",
+  "version": "1.0.0",
+  "description": "SoundCloud & YouTube Desktop Audio Player",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "node build_exe.js"
+  },
+  "keywords": [
+    "soundcloud",
+    "player",
+    "audio",
+    "electron"
+  ],
+  "author": "DropPrompt",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^45.3.2"
+  },
+  "dependencies": {
+    "@xhayper/discord-rpc": "^1.5.1",
+    "hls.js": "^1.7.4"
+  }
+}
