@@ -3,7 +3,8 @@ const path = require('path');
 
 const ROOT_DIR = __dirname;
 const ELECTRON_DIST = path.join(ROOT_DIR, 'node_modules', 'electron', 'dist');
-const OUTPUT_DIR = path.join(ROOT_DIR, 'build', 'PulsePlayer');
+const targetFolder = process.argv[2] || (fs.existsSync(path.join(ROOT_DIR, 'build', 'PulsePlayer', 'PulsePlayer.exe')) ? 'PulsePlayer_Standalone' : 'PulsePlayer');
+const OUTPUT_DIR = path.join(ROOT_DIR, 'build', targetFolder);
 const APP_DEST = path.join(OUTPUT_DIR, 'resources', 'app');
 
 console.log('[BUILD] Starting packaging for PulsePlayer Windows x64...');
