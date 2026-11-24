@@ -341,6 +341,17 @@ async function getRelatedTracks(trackId, limit = 25) {
   }
 }
 
+function getCoverCacheDir() {
+  const base = (typeof app !== 'undefined' && app && app.getPath)
+    ? app.getPath('userData')
+    : path.join(os.homedir(), '.pulse-player');
+  const dir = path.join(base, 'cover_cache');
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
 function parseAudioFile(filePath) {
   if (!filePath) return null;
   try {
@@ -353,6 +364,7 @@ function parseAudioFile(filePath) {
   const validExts = ['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.opus', '.wma'];
   if (!validExts.includes(ext)) return null;
 
+  const hash = crypto.createHash('md5').update(filePath.toLowerCase()).digest('hex').slice(0, 12);
   const baseName = path.basename(filePath, ext);
   let artist = 'Локальный трек';
   let title = baseName;
@@ -434,7 +446,16 @@ function parseAudioFile(filePath) {
               }
               if (pos < frameData.length) {
                 const imgBuf = frameData.slice(pos);
-                artworkUrl = `data:${mime};base64,${imgBuf.toString('base64')}`;
+                try {
+                  const imgExt = mime.toLowerCase().includes('png') ? '.png' : '.jpg';
+                  const coverDir = getCoverCacheDir();
+                  const coverFileName = `${hash}${imgExt}`;
+                  const coverFilePath = path.join(coverDir, coverFileName);
+                  if (!fs.existsSync(coverFilePath)) {
+                    fs.writeFileSync(coverFilePath, imgBuf);
+                  }
+                  artworkUrl = `pulse-audio://cover/${coverFileName}`;
+                } catch (e) {}
               }
             }
           } catch (e) {}
@@ -445,8 +466,6 @@ function parseAudioFile(filePath) {
     }
     fs.closeSync(fd);
   } catch (e) {}
-
-  const hash = crypto.createHash('md5').update(filePath.toLowerCase()).digest('hex').slice(0, 12);
 
   return {
     id: 'local_' + hash,
@@ -1110,6 +1129,25 @@ app.whenReady().then(async () => {
   // Безопасный стриминг локальных треков через pulse-audio протокол с полной поддержкой HTTP Range (206 Partial Content)
   protocol.handle('pulse-audio', async (request) => {
     try {
+      if (request.url.startsWith('pulse-audio://cover/')) {
+        const coverFile = decodeURIComponent(request.url.replace(/^pulse-audio:\/\/cover\/?/i, ''));
+        const safeName = path.basename(coverFile);
+        const coverPath = path.join(getCoverCacheDir(), safeName);
+        if (!fs.existsSync(coverPath)) {
+          return new Response('Not Found', { status: 404 });
+        }
+        const ext = path.extname(coverPath).toLowerCase();
+        const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
+        const stream = fs.createReadStream(coverPath);
+        return new Response(Readable.toWeb(stream), {
+          status: 200,
+          headers: {
+            'Content-Type': mime,
+            'Cache-Control': 'public, max-age=31536000'
+          }
+        });
+      }
+
       let rawPath = request.url.replace(/^pulse-audio:\/\/(?:stream)?\/?/i, '');
       let filePath = decodeURIComponent(rawPath);
       if (process.platform === 'win32' && filePath.startsWith('/')) {

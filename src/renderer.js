@@ -1,10 +1,31 @@
 // Pulse Player - Core Renderer
 (() => {
   // Safe Storage & Sanitization Helpers
+  function stripBloatedArtwork(val) {
+    if (!val) return val;
+    if (Array.isArray(val)) {
+      return val.map(stripBloatedArtwork);
+    }
+    if (typeof val === 'object') {
+      if (typeof val.artworkUrl === 'string' && val.artworkUrl.startsWith('data:image/') && val.artworkUrl.length > 500) {
+        val.artworkUrl = '';
+      }
+      if (Array.isArray(val.tracks)) {
+        val.tracks = val.tracks.map(stripBloatedArtwork);
+      }
+      if (val.track && typeof val.track === 'object') {
+        stripBloatedArtwork(val.track);
+      }
+    }
+    return val;
+  }
+
   function safeParseLS(key, fallback) {
     try {
       const v = localStorage.getItem(key);
-      return v ? JSON.parse(v) : fallback;
+      if (!v) return fallback;
+      const parsed = JSON.parse(v);
+      return stripBloatedArtwork(parsed);
     } catch (e) {
       console.warn(`[LS] Failed parsing ${key}:`, e.message);
       return fallback;
@@ -1024,9 +1045,9 @@
       preset: 'normal'
     },
     slowed: {
-      speed: 0.83,
+      speed: 0.88,
       vinylPitch: true,
-      reverbWet: 0.38,
+      reverbWet: 0.0,
       reverbDecay: 3.2,
       bassBoost: 4.5,
       treble: -1.0,
