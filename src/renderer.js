@@ -1165,7 +1165,9 @@
       audioCtx.resume().catch(() => {});
     }
 
-    const spd = Math.max(0.5, Math.min(1.75, Number(dspConfig.speed) || 1.0));
+    const minSpd = parseFloat(sliderRemixSpeed?.min) || 0.5;
+    const maxSpd = parseFloat(sliderRemixSpeed?.max) || 1.75;
+    const spd = Math.max(minSpd, Math.min(maxSpd, Number(dspConfig.speed) || 1.0));
     if (audio) {
       audio.playbackRate = spd;
       const preserves = !dspConfig.vinylPitch;
@@ -1200,7 +1202,10 @@
     if (sliderRemixSpeed) {
       sliderRemixSpeed.value = dspConfig.speed;
       valRemixSpeed.textContent = Number(dspConfig.speed).toFixed(2) + 'x';
-      fillRemixSpeed.style.width = ((dspConfig.speed - 0.5) / (1.75 - 0.5) * 100) + '%';
+      const minSpd = parseFloat(sliderRemixSpeed.min) || 0.5;
+      const maxSpd = parseFloat(sliderRemixSpeed.max) || 1.75;
+      const pct = Math.max(0, Math.min(100, ((dspConfig.speed - minSpd) / (maxSpd - minSpd)) * 100));
+      if (fillRemixSpeed) fillRemixSpeed.style.width = pct + '%';
     }
 
     if (btnPitchVinyl && btnPitchLock) {
@@ -1211,25 +1216,37 @@
     if (sliderRemixReverb) {
       sliderRemixReverb.value = dspConfig.reverbWet;
       valRemixReverb.textContent = Math.round(dspConfig.reverbWet * 100) + '%';
-      fillRemixReverb.style.width = (dspConfig.reverbWet * 100) + '%';
+      const minRev = parseFloat(sliderRemixReverb.min) || 0;
+      const maxRev = parseFloat(sliderRemixReverb.max) || 1;
+      const pct = Math.max(0, Math.min(100, ((dspConfig.reverbWet - minRev) / (maxRev - minRev)) * 100));
+      if (fillRemixReverb) fillRemixReverb.style.width = pct + '%';
     }
 
     if (sliderRemixDecay) {
       sliderRemixDecay.value = dspConfig.reverbDecay;
       valRemixDecay.textContent = Number(dspConfig.reverbDecay).toFixed(1) + 's';
-      fillRemixDecay.style.width = ((dspConfig.reverbDecay - 1.0) / 4.0 * 100) + '%';
+      const minDec = parseFloat(sliderRemixDecay.min) || 1.0;
+      const maxDec = parseFloat(sliderRemixDecay.max) || 5.0;
+      const pct = Math.max(0, Math.min(100, ((dspConfig.reverbDecay - minDec) / (maxDec - minDec)) * 100));
+      if (fillRemixDecay) fillRemixDecay.style.width = pct + '%';
     }
 
     if (sliderRemixBass) {
       sliderRemixBass.value = dspConfig.bassBoost;
       valRemixBass.textContent = (dspConfig.bassBoost >= 0 ? '+' : '') + Number(dspConfig.bassBoost).toFixed(1) + ' dB';
-      fillRemixBass.style.width = ((dspConfig.bassBoost - (-4)) / (10 - (-4)) * 100) + '%';
+      const minBass = parseFloat(sliderRemixBass.min) || -4;
+      const maxBass = parseFloat(sliderRemixBass.max) || 10;
+      const pct = Math.max(0, Math.min(100, ((dspConfig.bassBoost - minBass) / (maxBass - minBass)) * 100));
+      if (fillRemixBass) fillRemixBass.style.width = pct + '%';
     }
 
     if (sliderRemixTreble) {
       sliderRemixTreble.value = dspConfig.treble;
       valRemixTreble.textContent = (dspConfig.treble >= 0 ? '+' : '') + Number(dspConfig.treble).toFixed(1) + ' dB';
-      fillRemixTreble.style.width = ((dspConfig.treble - (-6)) / (6 - (-6)) * 100) + '%';
+      const minTrb = parseFloat(sliderRemixTreble.min) || -6;
+      const maxTrb = parseFloat(sliderRemixTreble.max) || 6;
+      const pct = Math.max(0, Math.min(100, ((dspConfig.treble - minTrb) / (maxTrb - minTrb)) * 100));
+      if (fillRemixTreble) fillRemixTreble.style.width = pct + '%';
     }
 
     document.querySelectorAll('.remix-preset-btn').forEach(btn => {
@@ -3797,7 +3814,9 @@
     dspConfig.reverbDecay = decay;
     dspConfig.preset = 'custom';
     valRemixDecay.textContent = decay.toFixed(1) + 's';
-    fillRemixDecay.style.width = ((decay - 1.0) / 4.0 * 100) + '%';
+    const minDec = parseFloat(sliderRemixDecay.min) || 1.0;
+    const maxDec = parseFloat(sliderRemixDecay.max) || 5.0;
+    fillRemixDecay.style.width = ((decay - minDec) / (maxDec - minDec) * 100) + '%';
   });
 
   sliderRemixDecay?.addEventListener('change', () => {
