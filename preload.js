@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
   searchTracks: (query, source = 'soundcloud', offset = 0, limit = 25) => ipcRenderer.invoke('search-tracks', { query, source, offset, limit }),
+  searchArtists: (query, offset = 0, limit = 25) => ipcRenderer.invoke('search-artists', { query, offset, limit }),
   getRelatedTracks: (trackId) => ipcRenderer.invoke('get-related-tracks', trackId),
   getArtistProfile: (artistId) => ipcRenderer.invoke('get-artist-profile', artistId),
   resolveStream: (track) => ipcRenderer.invoke('resolve-stream', track),
@@ -29,6 +30,8 @@ contextBridge.exposeInMainWorld('api', {
   getDiscordStatus: () => ipcRenderer.invoke('get-discord-status'),
   getFavoritesBackup: () => ipcRenderer.invoke('get-favorites-backup'),
   saveFavoritesBackup: (favs) => ipcRenderer.invoke('save-favorites-backup', favs),
+  getFavoriteArtistsBackup: () => ipcRenderer.invoke('get-favorite-artists-backup'),
+  saveFavoriteArtistsBackup: (artists) => ipcRenderer.invoke('save-favorite-artists-backup', artists),
   getPlaylistsBackup: () => ipcRenderer.invoke('get-playlists-backup'),
   savePlaylistsBackup: (playlists) => ipcRenderer.invoke('save-playlists-backup', playlists),
   isYtDlpAvailable: () => ipcRenderer.invoke('is-ytdlp-available'),

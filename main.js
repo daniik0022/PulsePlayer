@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net } = require('electron');
+const { Readable } = require('stream');
 const { pathToFileURL } = require('url');
 const path = require('path');
 const https = require('https');
@@ -240,6 +241,33 @@ async function searchSoundCloud(query, limit = 25, offset = 0) {
   };
 }
 
+async function searchSoundCloudArtists(query, limit = 25, offset = 0) {
+  const cid = await getSoundCloudClientId();
+  const searchUrl = `https://api-v2.soundcloud.com/search/users?q=${encodeURIComponent(query)}&client_id=${cid}&limit=${limit}&offset=${offset}`;
+  const raw = await fetchUrl(searchUrl, { 'Referer': 'https://soundcloud.com/' });
+  const data = JSON.parse(raw);
+  const artists = (data.collection || []).map(u => ({
+    id: String(u.id),
+    username: u.username || 'Unknown Artist',
+    fullName: u.full_name || '',
+    avatarUrl: (u.avatar_url || '').replace('-large.', '-t500x500.'),
+    city: u.city || '',
+    country: u.country || '',
+    followersCount: u.followers_count || 0,
+    trackCount: u.track_count || 0,
+    permalinkUrl: u.permalink_url || '',
+    verified: Boolean(u.verified)
+  }));
+  const hasMore = Boolean(data.next_href) && artists.length >= limit;
+  return {
+    artists,
+    hasMore,
+    total: data.total_results || 0,
+    offset,
+    limit
+  };
+}
+
 async function getArtistProfile(artistId) {
   const cid = await getSoundCloudClientId();
   const userUrl = `https://api-v2.soundcloud.com/users/${artistId}?client_id=${cid}`;
@@ -437,12 +465,28 @@ function parseAudioFile(filePath) {
 
 async function resolveSoundCloudStream(track) {
   const cid = await getSoundCloudClientId();
-  const tc = track.transcodings || [];
+  let tc = track.transcodings || [];
+  if (!tc.length && track.id) {
+    try {
+      const trackRaw = await fetchUrl(`https://api-v2.soundcloud.com/tracks/${track.id}?client_id=${cid}`, { 'Referer': 'https://soundcloud.com/' });
+      const parsed = JSON.parse(trackRaw);
+      if (parsed.media && parsed.media.transcodings) {
+        tc = parsed.media.transcodings;
+        track.transcodings = tc;
+      }
+    } catch (e) {
+      console.warn('[SC] Failed to re-fetch track transcodings:', e.message);
+    }
+  }
+
   if (!tc.length) {
     throw new Error('У трека отсутствуют потоки транскодинга');
   }
 
-  const target = tc.find(t => t.format && t.format.protocol === 'progressive') || tc[0];
+  const target = tc.find(t => t.format && t.format.protocol === 'progressive')
+    || tc.find(t => t.format && t.format.protocol === 'hls')
+    || tc[0];
+
   const reqUrl = `${target.url}?client_id=${cid}`;
   const raw = await fetchUrl(reqUrl, { 'Referer': 'https://soundcloud.com/' });
   const json = JSON.parse(raw);
@@ -482,7 +526,7 @@ async function searchYouTube(query, limit = 25, offset = 0) {
           artistAvatar: '',
           durationMs: (e.duration || 0) * 1000,
           artworkUrl: (e.thumbnails && e.thumbnails.length) ? e.thumbnails[e.thumbnails.length - 1].url : '',
-          permalinkUrl: e.url || `https://www.youtube.com/watch?v=${e.id}`,
+          permalinkUrl: (e.webpage_url && /^https?:\/\//i.test(e.webpage_url)) ? e.webpage_url : (e.id ? `https://www.youtube.com/watch?v=${e.id}` : (e.url || '')),
           playbackCount: e.view_count || 0,
           likesCount: 0,
           transcodings: []
@@ -508,14 +552,19 @@ async function resolveYouTubeStream(track) {
   if (!isYtDlpAvailable) {
     throw new Error('yt-dlp не установлен в системе (добавьте yt-dlp в PATH)');
   }
-  if (!track.permalinkUrl || !/^https?:\/\/(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)\//i.test(track.permalinkUrl)) {
-    throw new Error('Недопустимый URL YouTube');
+  let targetUrl = track.permalinkUrl;
+  if (!targetUrl || !/^https?:\/\/(?:[a-zA-Z0-9-]+\.)*(?:youtube\.com|youtu\.be)\//i.test(targetUrl)) {
+    if (track.id) {
+      targetUrl = `https://www.youtube.com/watch?v=${track.id}`;
+    } else {
+      throw new Error('Недопустимый URL YouTube');
+    }
   }
   return new Promise((resolve, reject) => {
     const proc = spawn('yt-dlp', [
       '-f', 'bestaudio',
       '-g',
-      track.permalinkUrl
+      targetUrl
     ]);
 
     let stdout = '';
@@ -537,10 +586,33 @@ async function resolveYouTubeStream(track) {
 }
 
 function getDownloadDir() {
-  const dir = path.join(os.homedir(), 'Downloads', 'SC-Player');
+  const docsDir = (typeof app !== 'undefined' && app && app.getPath)
+    ? app.getPath('documents')
+    : path.join(os.homedir(), 'Documents');
+  const dir = path.join(docsDir, 'SC-Player');
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+
+  // Auto-migrate from legacy Downloads/SC-Player if needed
+  try {
+    const oldDir = path.join(os.homedir(), 'Downloads', 'SC-Player');
+    if (fs.existsSync(oldDir)) {
+      const items = fs.readdirSync(oldDir);
+      for (const item of items) {
+        const src = path.join(oldDir, item);
+        const dest = path.join(dir, item);
+        if (!fs.existsSync(dest)) {
+          try {
+            fs.renameSync(src, dest);
+          } catch (err) {
+            try { fs.copyFileSync(src, dest); } catch (e) {}
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
   return dir;
 }
 
@@ -684,6 +756,13 @@ async function downloadTrack(track) {
     try { fs.unlinkSync(partPath); } catch (e) {}
   }
 
+  if (track.source === 'local') {
+    if (track.filePath && fs.existsSync(track.filePath)) {
+      return { success: true, path: track.filePath, message: 'Локальный файл уже сохранён на диске' };
+    }
+    return { success: false, message: 'Локальный файл не найден на диске' };
+  }
+
   if (track.source === 'soundcloud') {
     try {
       const resolved = await resolveSoundCloudStream(track);
@@ -699,7 +778,8 @@ async function downloadTrack(track) {
           const proc = spawn('ffmpeg', [
             '-y',
             '-i', resolved.streamUrl,
-            '-c', 'copy',
+            '-c:a', 'libmp3lame',
+            '-q:a', '2',
             partPath
           ]);
           proc.on('close', (code) => {
@@ -728,11 +808,26 @@ async function downloadTrack(track) {
         return { success: true, path: destPath };
       }
     } catch (scErr) {
-      await downloadWithYtDlp(track.permalinkUrl, destPath);
+      console.warn('[SC Download] Поток SoundCloud не удалось обработать напрямую, фоллбэк на yt-dlp:', scErr.message);
+      let targetUrl = track.permalinkUrl;
+      if (!targetUrl || !/^https?:\/\/(?:[a-zA-Z0-9-]+\.)*(?:soundcloud\.com|snd\.sc)/i.test(targetUrl)) {
+        targetUrl = track.id ? `https://api.soundcloud.com/tracks/${track.id}` : null;
+      }
+      if (!targetUrl) throw new Error('Не удалось определить адрес трека SoundCloud');
+      await downloadWithYtDlp(targetUrl, destPath);
       return { success: true, path: destPath };
     }
   } else {
-    await downloadWithYtDlp(track.permalinkUrl, destPath);
+    let targetUrl = track.permalinkUrl;
+    if (!targetUrl || !/^https?:\/\/(?:[a-zA-Z0-9-]+\.)*(?:youtube\.com|youtu\.be|soundcloud\.com)/i.test(targetUrl)) {
+      if (track.id) {
+        targetUrl = (track.source === 'soundcloud' || /^\d+$/.test(track.id))
+          ? `https://api.soundcloud.com/tracks/${track.id}`
+          : `https://www.youtube.com/watch?v=${track.id}`;
+      }
+    }
+    if (!targetUrl) throw new Error('Не удалось определить адрес трека');
+    await downloadWithYtDlp(targetUrl, destPath);
     return { success: true, path: destPath };
   }
 }
@@ -919,7 +1014,8 @@ function downloadWithYtDlp(url, destPath) {
   if (!isYtDlpAvailable) {
     return Promise.reject(new Error('yt-dlp не установлен в системе (добавьте yt-dlp в PATH)'));
   }
-  if (!url || !/^https?:\/\/(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)\//i.test(url)) {
+  const isAllowed = /^https?:\/\/(?:[a-zA-Z0-9-]+\.)*(?:youtube\.com|youtu\.be|soundcloud\.com|snd\.sc|googlevideo\.com)/i.test(url);
+  if (!url || !isAllowed) {
     return Promise.reject(new Error('Недопустимый URL для yt-dlp'));
   }
   const cleanDest = destPath.replace(/\.part$/, '');
@@ -930,9 +1026,12 @@ function downloadWithYtDlp(url, destPath) {
       '-x',
       '--audio-format', 'mp3',
       '--audio-quality', '0',
+      '--no-warnings',
       '-o', outTemplate,
       url
     ]);
+    let stderr = '';
+    proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     proc.on('close', (code) => {
       if (code === 0) {
         try {
@@ -947,7 +1046,10 @@ function downloadWithYtDlp(url, destPath) {
         }
       } else {
         if (fs.existsSync(cleanDest)) fs.unlinkSync(cleanDest);
-        reject(new Error(`yt-dlp завершился с кодом ${code}`));
+        const errMsg = stderr.trim()
+          ? (stderr.split('\n').filter(l => l.includes('ERROR:') || l.includes('Error')).pop() || stderr.slice(-300))
+          : `код ${code}`;
+        reject(new Error(`yt-dlp: ${errMsg.replace(/^ERROR:\s*/i, '').trim()}`));
       }
     });
     proc.on('error', (err) => {
@@ -1005,7 +1107,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  // Безопасный стриминг локальных треков через pulse-audio протокол
+  // Безопасный стриминг локальных треков через pulse-audio протокол с полной поддержкой HTTP Range (206 Partial Content)
   protocol.handle('pulse-audio', async (request) => {
     try {
       let rawPath = request.url.replace(/^pulse-audio:\/\/(?:stream)?\/?/i, '');
@@ -1020,15 +1122,59 @@ app.whenReady().then(async () => {
         console.warn('[PULSE-AUDIO] Файл не найден или недопустим:', filePath);
         return new Response('Forbidden', { status: 403 });
       }
-      const fileRes = await net.fetch(pathToFileURL(filePath).toString());
-      const headers = new Headers(fileRes.headers);
-      headers.set('Access-Control-Allow-Origin', '*');
-      headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-      headers.set('Access-Control-Allow-Headers', '*');
-      return new Response(fileRes.body, {
-        status: fileRes.status,
-        statusText: fileRes.statusText,
-        headers
+
+      const stat = fs.statSync(filePath);
+      const fileSize = stat.size;
+      const rangeHeader = request.headers.get('range');
+
+      const mimeTypes = {
+        '.mp3': 'audio/mpeg',
+        '.wav': 'audio/wav',
+        '.ogg': 'audio/ogg',
+        '.flac': 'audio/flac',
+        '.m4a': 'audio/mp4',
+        '.aac': 'audio/aac',
+        '.opus': 'audio/opus',
+        '.wma': 'audio/x-ms-wma'
+      };
+      const contentType = mimeTypes[ext] || 'audio/mpeg';
+
+      if (rangeHeader) {
+        const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+        if (match) {
+          const start = parseInt(match[1], 10);
+          const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+          const chunkSize = (end - start) + 1;
+
+          const stream = fs.createReadStream(filePath, { start, end });
+          return new Response(Readable.toWeb(stream), {
+            status: 206,
+            statusText: 'Partial Content',
+            headers: {
+              'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+              'Accept-Ranges': 'bytes',
+              'Content-Length': String(chunkSize),
+              'Content-Type': contentType,
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+              'Access-Control-Allow-Headers': '*'
+            }
+          });
+        }
+      }
+
+      const stream = fs.createReadStream(filePath);
+      return new Response(Readable.toWeb(stream), {
+        status: 200,
+        statusText: 'OK',
+        headers: {
+          'Content-Length': String(fileSize),
+          'Content-Type': contentType,
+          'Accept-Ranges': 'bytes',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+          'Access-Control-Allow-Headers': '*'
+        }
       });
     } catch (e) {
       console.error('[PULSE-AUDIO] Ошибка обработки:', e);
@@ -1045,6 +1191,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('search-tracks', async (_, { query, source, offset = 0, limit = 25 }) => {
     if (source === 'youtube') return await searchYouTube(query, limit, offset);
     return await searchSoundCloud(query, limit, offset);
+  });
+
+  ipcMain.handle('search-artists', async (_, { query, offset = 0, limit = 25 }) => {
+    return await searchSoundCloudArtists(query, limit, offset);
   });
 
   ipcMain.handle('get-artist-profile', async (_, artistId) => {
@@ -1350,6 +1500,32 @@ app.whenReady().then(async () => {
       return true;
     } catch (err) {
       console.warn('[BACKUP] Failed to save favorites:', err.message);
+      return false;
+    }
+  });
+
+  ipcMain.handle('get-favorite-artists-backup', () => {
+    try {
+      const userBackup = path.join(app.getPath('userData'), 'favorite_artists_autobackup.json');
+      if (fs.existsSync(userBackup)) {
+        return JSON.parse(fs.readFileSync(userBackup, 'utf-8'));
+      }
+    } catch (e) {
+      console.warn('Failed to read favorite artists backup:', e);
+    }
+    return [];
+  });
+
+  ipcMain.handle('save-favorite-artists-backup', async (_, artists) => {
+    if (!Array.isArray(artists)) return false;
+    try {
+      const userBackup = path.join(app.getPath('userData'), 'favorite_artists_autobackup.json');
+      const tmpPath = userBackup + '.tmp';
+      fs.writeFileSync(tmpPath, JSON.stringify(artists, null, 2), 'utf8');
+      fs.renameSync(tmpPath, userBackup);
+      return true;
+    } catch (e) {
+      console.warn('Failed to save favorite artists backup:', e);
       return false;
     }
   });

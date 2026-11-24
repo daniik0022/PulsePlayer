@@ -20,6 +20,16 @@
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
   }
+  const escapeHtml = esc;
+
+  function formatPlural(count, one, few, many) {
+    const n = Math.abs(count) % 100;
+    const n1 = n % 10;
+    if (n > 10 && n < 20) return `${count} ${many}`;
+    if (n1 > 1 && n1 < 5) return `${count} ${few}`;
+    if (n1 === 1) return `${count} ${one}`;
+    return `${count} ${many}`;
+  }
 
   // 4. Санитизация URL для защиты от javascript: и сторонних протоколов
   function safeUrl(url) {
@@ -45,10 +55,14 @@
   let queueIndex = -1;
   let history = safeParseLS('pulse_history', []);
   let favorites = safeParseLS('pulse_favorites', []);
+  let favoriteArtists = safeParseLS('pulse_favorite_artists', []);
   let playlists = safeParseLS('pulse_custom_playlists', []);
   let playStats = safeParseLS('pulse_play_stats', { tracks: {}, artists: {} });
   let lastSession = safeParseLS('pulse_last_session', null);
   let lastSessionSaveTime = 0;
+  let currentSearchCategory = 'tracks'; // 'tracks' | 'artists'
+  let currentFavSubtab = 'tracks'; // 'tracks' | 'artists'
+  let currentView = 'home';
 
   // Auto-restore backup if empty
   if (favorites.length === 0 && window.api?.getFavoritesBackup) {
@@ -58,6 +72,16 @@
         localStorage.setItem('pulse_favorites', JSON.stringify(favorites));
         if (typeof updateBadgeCounts === 'function') updateBadgeCounts();
         if (typeof renderHomeView === 'function') renderHomeView();
+      }
+    }).catch(() => {});
+  }
+
+  if (favoriteArtists.length === 0 && window.api?.getFavoriteArtistsBackup) {
+    window.api.getFavoriteArtistsBackup().then(backup => {
+      if (backup && backup.length > 0 && favoriteArtists.length === 0) {
+        favoriteArtists = backup;
+        localStorage.setItem('pulse_favorite_artists', JSON.stringify(favoriteArtists));
+        if (typeof updateBadgeCounts === 'function') updateBadgeCounts();
       }
     }).catch(() => {});
   }
@@ -190,6 +214,7 @@
   // Views
   const viewHome = document.getElementById('viewHome');
   const viewSearch = document.getElementById('viewSearch');
+  const viewFavorites = document.getElementById('viewFavorites');
   const viewArtist = document.getElementById('viewArtist');
   const viewLyrics = document.getElementById('viewLyrics');
   const viewStats = document.getElementById('viewStats');
@@ -198,6 +223,14 @@
   const statsTopArtist = document.getElementById('statsTopArtist');
   const statsTopTracksList = document.getElementById('statsTopTracksList');
   const statsTopArtistsList = document.getElementById('statsTopArtistsList');
+
+  // Favorites elements
+  const favTracksList = document.getElementById('favTracksList');
+  const favArtistsGrid = document.getElementById('favArtistsGrid');
+  const favResultsCount = document.getElementById('favResultsCount');
+  const favTracksBadge = document.getElementById('favTracksBadge');
+  const favArtistsBadge = document.getElementById('favArtistsBadge');
+  const favSubtabs = document.getElementById('favSubtabs');
 
   // Home elements
   const btnPlayFavsHome = document.getElementById('btnPlayFavsHome');
@@ -208,6 +241,8 @@
   const viewTitle = document.getElementById('viewTitle');
   const resultsCount = document.getElementById('resultsCount');
   const tracksList = document.getElementById('tracksList');
+  const searchArtistsGrid = document.getElementById('searchArtistsGrid');
+  const searchCategorySelector = document.getElementById('searchCategorySelector');
   const searchInitialState = document.getElementById('searchInitialState');
   const searchLoader = document.getElementById('searchLoader');
   const searchLoaderText = document.getElementById('searchLoaderText');
@@ -229,6 +264,8 @@
   const artistLocationDot = document.getElementById('artistLocationDot');
   const btnArtistPlayAll = document.getElementById('btnArtistPlayAll');
   const btnArtistOpenWeb = document.getElementById('btnArtistOpenWeb');
+  const btnArtistFav = document.getElementById('btnArtistFav');
+  const artistFavBtnText = document.getElementById('artistFavBtnText');
 
   // Artist subtabs
   const tabBadgeTracks = document.getElementById('tabBadgeTracks');
@@ -338,6 +375,8 @@
 
   let trackLastFmPlaybackStart = 0;
   let trackLastFmScrobbled = false;
+  let trackActualListenSeconds = 0;
+  let lastAudioTimeTick = 0;
   let currentTrackRawLrc = null;
   let currentLyricsFormat = 'lrc';
   const btnLyrics = document.getElementById('btnLyrics');
@@ -1088,7 +1127,10 @@
     try {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 128;
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.82;
+      analyser.minDecibels = -85;
+      analyser.maxDecibels = -10;
       dataArray = new Uint8Array(analyser.frequencyBinCount);
 
       sourceNode = audioCtx.createMediaElementSource(audio);
@@ -1276,15 +1318,31 @@
     analyser.getByteFrequencyData(dataArray);
     canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
 
-    const count = Math.min(analyser.frequencyBinCount, 64);
-    const barWidth = canvas.width / count;
+    const playerRight = document.querySelector('.player-right');
+    const targetWidth = playerRight ? Math.max(200, playerRight.offsetLeft - 8) : canvas.width;
+
+    const slotWidth = 18;
+    const count = Math.max(12, Math.floor(targetWidth / slotWidth));
+    const barWidth = targetWidth / count;
     let x = 0;
 
+    const minBin = 1;
+    // Ограничиваем верхний срез до ~10.5 кГц (56 бин при 256 FFT), где всегда активны тарелки/хэты
+    const maxBin = Math.min(analyser.frequencyBinCount - 1, 56);
+
     for (let i = 0; i < count; i++) {
-      const val = dataArray[i] / 255;
-      const barHeight = val * canvas.height * 0.94;
+      const norm = i / Math.max(1, count - 1);
+      const binIdx = Math.min(maxBin, Math.floor(Math.pow(norm, 1.45) * (maxBin - minBin)) + minBin);
+
+      const tilt = 1.0 + (norm * 1.35);
+      const rawVal = ((dataArray[binIdx] || 0) / 255) * tilt;
+      // Мягкая компрессионная кривая с запасом по высоте (хэдрум), чтобы палки не липли к потолку на макс. громкости
+      const compressed = Math.pow(Math.min(1.0, rawVal * 0.88), 1.28);
+      const val = Math.max(0.02, Math.min(0.78, compressed));
+
+      const barHeight = val * canvas.height;
       const by = canvas.height - barHeight;
-      const bw = Math.max(2, barWidth - 3);
+      const bw = Math.max(5, barWidth - 3);
 
       // Cyberpunk dual-tone laser gradient (Cyan #00f0ff -> Neon Magenta #ff0055)
       const grad = canvasCtx.createLinearGradient(0, canvas.height, 0, by);
@@ -1296,17 +1354,17 @@
       canvasCtx.fillStyle = grad;
       canvasCtx.beginPath();
       if (canvasCtx.roundRect) {
-        canvasCtx.roundRect(x, by, bw, barHeight, [2, 2, 0, 0]);
+        canvasCtx.roundRect(x, by, bw, barHeight, [3, 3, 0, 0]);
       } else {
         canvasCtx.rect(x, by, bw, barHeight);
       }
       canvasCtx.fill();
 
       // Cyber apex spark indicator
-      if (val > 0.35) {
-        canvasCtx.fillStyle = val > 0.8 ? '#00f0ff' : 'rgba(255, 255, 255, 0.9)';
+      if (val > 0.32) {
+        canvasCtx.fillStyle = val > 0.65 ? '#00f0ff' : 'rgba(255, 255, 255, 0.9)';
         canvasCtx.shadowColor = '#00f0ff';
-        canvasCtx.shadowBlur = val > 0.8 ? 8 : 3;
+        canvasCtx.shadowBlur = val > 0.65 ? 8 : 3;
         canvasCtx.fillRect(x, by - 2, bw, 2);
         canvasCtx.shadowBlur = 0;
       }
@@ -1348,7 +1406,9 @@
   }
 
   function updateBadgeCounts() {
-    if (favCountEl) favCountEl.textContent = favorites.length;
+    if (favCountEl) favCountEl.textContent = favorites.length + favoriteArtists.length;
+    if (favTracksBadge) favTracksBadge.textContent = favorites.length;
+    if (favArtistsBadge) favArtistsBadge.textContent = favoriteArtists.length;
     if (localCountEl) localCountEl.textContent = localTracks.length;
     if (queueCountEl) queueCountEl.textContent = queue.length;
     if (playlistsCountEl) playlistsCountEl.textContent = playlists.length;
@@ -1497,10 +1557,12 @@
   }
 
   function applyView(viewName) {
+    currentView = viewName;
     updateNavButtons();
 
     viewHome.style.display = 'none';
     viewSearch.style.display = 'none';
+    if (viewFavorites) viewFavorites.style.display = 'none';
     viewArtist.style.display = 'none';
     if (viewPlaylists) viewPlaylists.style.display = 'none';
     if (viewPlaylistDetail) viewPlaylistDetail.style.display = 'none';
@@ -1573,20 +1635,10 @@
         renderTrackRows(localTracks, tracksList);
       }
     } else if (viewName === 'favorites') {
-      viewSearch.style.display = 'flex';
+      if (viewFavorites) viewFavorites.style.display = 'flex';
       const nav = document.querySelector('.nav-item[data-tab="favorites"]');
       if (nav) nav.classList.add('active');
-      viewTitle.textContent = 'Любимые треки';
-      document.getElementById('sourceSelector').style.display = 'none';
-      searchInitialState.style.display = 'none';
-      searchLoader.style.display = 'none';
-      tracksList.style.display = 'flex';
-      resultsCount.textContent = `${favorites.length} треков`;
-      if (!favorites.length) {
-        tracksList.innerHTML = `<div class="empty-state"><div class="empty-icon">❤️</div><h3>Список пуст</h3><p>Добавляй треки в любимые кликом по сердечку</p></div>`;
-      } else {
-        renderTrackRows(favorites, tracksList);
-      }
+      renderFavoritesView();
     } else if (viewName === 'lyrics') {
       const contentArea = document.querySelector('.content-area');
       if (contentArea) {
@@ -2034,6 +2086,179 @@
     });
   }
 
+  // ========================================================
+  // FAVORITE ARTISTS LOGIC
+  // ========================================================
+  function isArtistFavorite(artist) {
+    if (!artist) return false;
+    const id = String(artist.id || artist.artistId || '');
+    const username = (artist.username || artist.name || artist.artist || '').toLowerCase().trim();
+    return favoriteArtists.some(fa => {
+      const faId = String(fa.id || '');
+      const faName = (fa.username || fa.name || fa.artist || '').toLowerCase().trim();
+      return (id && faId && id === faId) || (username && faName && username === faName);
+    });
+  }
+
+  function toggleFavoriteArtist(artist) {
+    if (!artist) return false;
+    const id = String(artist.id || artist.artistId || '');
+    const username = artist.username || artist.name || artist.artist || 'Unknown';
+    const cleanUserLower = username.toLowerCase().trim();
+
+    const existsIdx = favoriteArtists.findIndex(fa => {
+      const faId = String(fa.id || '');
+      const faName = (fa.username || fa.name || fa.artist || '').toLowerCase().trim();
+      return (id && faId && id === faId) || (cleanUserLower && faName && cleanUserLower === faName);
+    });
+
+    let isLiked = false;
+    if (existsIdx >= 0) {
+      favoriteArtists.splice(existsIdx, 1);
+      showToast(`Удален из любимых: ${username}`);
+    } else {
+      const artistObj = {
+        id: id || ('art_' + Date.now()),
+        username,
+        fullName: artist.fullName || '',
+        avatarUrl: artist.avatarUrl || artist.avatar || '',
+        city: artist.city || '',
+        country: artist.country || '',
+        followersCount: artist.followersCount || 0,
+        trackCount: artist.trackCount || 0,
+        permalinkUrl: artist.permalinkUrl || '',
+        verified: Boolean(artist.verified)
+      };
+      favoriteArtists.unshift(artistObj);
+      showToast(`Исполнитель в любимых: ${username}`);
+      isLiked = true;
+    }
+
+    localStorage.setItem('pulse_favorite_artists', JSON.stringify(favoriteArtists));
+    if (window.api && window.api.saveFavoriteArtistsBackup) {
+      window.api.saveFavoriteArtistsBackup(favoriteArtists).catch(() => {});
+    }
+
+    updateBadgeCounts();
+    updateArtistFavoriteBtnState();
+
+    if (currentView === 'favorites') {
+      renderFavoritesView();
+    }
+    return isLiked;
+  }
+
+  function updateArtistFavoriteBtnState() {
+    if (!btnArtistFav) return;
+    if (!currentArtistData || !currentArtistData.artist) {
+      btnArtistFav.classList.remove('liked');
+      if (artistFavBtnText) artistFavBtnText.textContent = 'В любимые';
+      const svg = btnArtistFav.querySelector('svg');
+      if (svg) svg.setAttribute('fill', 'none');
+      return;
+    }
+    const isFav = isArtistFavorite(currentArtistData.artist);
+    btnArtistFav.classList.toggle('liked', isFav);
+    if (artistFavBtnText) {
+      artistFavBtnText.textContent = isFav ? 'В любимых' : 'В любимые';
+    }
+    const svg = btnArtistFav.querySelector('svg');
+    if (svg) {
+      svg.setAttribute('fill', isFav ? 'currentColor' : 'none');
+    }
+  }
+
+  function createArtistCard(artist) {
+    const card = document.createElement('div');
+    card.className = 'artist-card';
+    card.dataset.id = artist.id;
+
+    const isFav = isArtistFavorite(artist);
+    const avatar = artist.avatarUrl ? safeUrl(artist.avatarUrl) : '';
+    const username = artist.username || 'Исполнитель';
+    const initial = (username[0] || 'A').toUpperCase();
+
+    card.innerHTML = `
+      <button class="artist-card-fav-btn ${isFav ? 'liked' : ''}" title="${isFav ? 'Удалить из любимых' : 'Добавить в любимые'}">
+        <svg viewBox="0 0 24 24" fill="${isFav ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+        </svg>
+      </button>
+      <div class="artist-card-avatar-box">
+        ${avatar ? `<img src="${avatar}" alt="${esc(username)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">` : ''}
+        <div class="avatar-fallback" style="${avatar ? 'display:none;' : 'display:flex;'}">${initial}</div>
+      </div>
+      <div class="artist-card-info">
+        <div class="artist-card-name" title="${esc(username)}">
+          <span>${esc(username)}</span>
+          ${artist.verified ? `<span class="verified-badge" title="Подтвержден">✓</span>` : ''}
+        </div>
+        <div class="artist-card-meta">
+          ${artist.followersCount ? `<span><strong>${formatNumber(artist.followersCount)}</strong> подписчиков</span>` : (artist.trackCount ? `<span><strong>${artist.trackCount}</strong> треков</span>` : `<span>Исполнитель</span>`)}
+        </div>
+      </div>
+    `;
+
+    const favBtn = card.querySelector('.artist-card-fav-btn');
+    if (favBtn) {
+      favBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const liked = toggleFavoriteArtist(artist);
+        favBtn.classList.toggle('liked', liked);
+        favBtn.querySelector('svg').setAttribute('fill', liked ? 'currentColor' : 'none');
+      });
+    }
+
+    card.addEventListener('click', () => {
+      openArtistProfile(artist.id);
+    });
+
+    return card;
+  }
+
+  function renderFavoritesView() {
+    updateBadgeCounts();
+    if (favSubtabs) {
+      favSubtabs.querySelectorAll('.fav-tab-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.favTab === currentFavSubtab);
+      });
+    }
+    if (currentFavSubtab === 'tracks') {
+      if (favTracksList) favTracksList.style.display = 'flex';
+      if (favArtistsGrid) favArtistsGrid.style.display = 'none';
+      if (favResultsCount) favResultsCount.textContent = formatPlural(favorites.length, 'трек', 'трека', 'треков');
+      if (!favorites.length) {
+        favTracksList.innerHTML = `<div class="empty-state"><div class="empty-icon">❤️</div><h3>Список пуст</h3><p>Добавляй треки в любимые кликом по сердечку</p></div>`;
+      } else {
+        renderTrackRows(favorites, favTracksList);
+      }
+    } else {
+      if (favTracksList) favTracksList.style.display = 'none';
+      if (favArtistsGrid) favArtistsGrid.style.display = 'grid';
+      if (favResultsCount) favResultsCount.textContent = formatPlural(favoriteArtists.length, 'исполнитель', 'исполнителя', 'исполнителей');
+      renderFavoriteArtistsGrid();
+    }
+  }
+
+  function renderFavoriteArtistsGrid() {
+    if (!favArtistsGrid) return;
+    favArtistsGrid.innerHTML = '';
+    if (!favoriteArtists.length) {
+      favArtistsGrid.innerHTML = `
+        <div class="empty-state" style="grid-column: 1 / -1;">
+          <div class="empty-icon">⭐</div>
+          <h3>Нет любимых исполнителей</h3>
+          <p>Находи любимых музыкантов через поиск или добавляй прямо из их профиля</p>
+        </div>
+      `;
+      return;
+    }
+    favoriteArtists.forEach(artist => {
+      const card = createArtistCard(artist);
+      favArtistsGrid.appendChild(card);
+    });
+  }
+
   // Artist Profile Page Logic
   async function openArtistProfile(artistId) {
     if (!artistId) return;
@@ -2138,6 +2363,15 @@
       bioPlaylists.textContent = formatNumber(artist.playlistCount);
       bioUserId.textContent = String(artist.id);
 
+      // Favorite Button State & Handler
+      updateArtistFavoriteBtnState();
+      if (btnArtistFav) {
+        btnArtistFav.onclick = () => {
+          if (!currentArtistData || !currentArtistData.artist) return;
+          toggleFavoriteArtist(currentArtistData.artist);
+        };
+      }
+
     } catch (err) {
       console.error('Failed to open artist:', err);
       artistTracksList.innerHTML = `<div class="empty-state"><h3>Ошибка загрузки профиля</h3><p>${err.message}</p></div>`;
@@ -2185,6 +2419,47 @@
 
     viewTitle.textContent = `Поиск: "${cleanQuery}"`;
     searchInitialState.style.display = 'none';
+
+    if (currentSearchCategory === 'artists') {
+      tracksList.style.display = 'none';
+      if (searchArtistsGrid) searchArtistsGrid.style.display = 'none';
+      searchLoader.style.display = 'flex';
+      searchLoaderText.textContent = `Поиск исполнителей в SoundCloud...`;
+
+      try {
+        const resp = await window.api.searchArtists(cleanQuery, 0, 30);
+        searchLoader.style.display = 'none';
+        if (searchArtistsGrid) {
+          searchArtistsGrid.style.display = 'grid';
+          searchArtistsGrid.innerHTML = '';
+        }
+
+        const artists = resp?.artists || [];
+        resultsCount.textContent = formatPlural(artists.length, 'исполнитель', 'исполнителя', 'исполнителей');
+
+        if (artists.length === 0) {
+          if (searchArtistsGrid) {
+            searchArtistsGrid.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1;"><h3>Исполнители не найдены</h3><p>Попробуй изменить поисковый запрос</p></div>`;
+          }
+          return;
+        }
+
+        artists.forEach(artist => {
+          const card = createArtistCard(artist);
+          searchArtistsGrid.appendChild(card);
+        });
+      } catch (err) {
+        searchLoader.style.display = 'none';
+        if (searchArtistsGrid) {
+          searchArtistsGrid.style.display = 'grid';
+          searchArtistsGrid.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1;"><h3>Ошибка поиска артистов</h3><p>${err.message}</p></div>`;
+        }
+        showToast('Ошибка при поиске артистов');
+      }
+      return;
+    }
+
+    if (searchArtistsGrid) searchArtistsGrid.style.display = 'none';
     tracksList.style.display = 'none';
     searchLoader.style.display = 'flex';
     searchLoaderText.textContent = `Поиск в ${currentSource === 'soundcloud' ? 'SoundCloud' : 'YouTube'}...`;
@@ -2316,6 +2591,44 @@
       }
     });
   });
+
+  // Search Category Switcher (Tracks vs Artists)
+  if (searchCategorySelector) {
+    searchCategorySelector.querySelectorAll('.category-pill').forEach(pill => {
+      pill.addEventListener('click', () => {
+        const cat = pill.dataset.searchCat;
+        if (!cat || cat === currentSearchCategory) return;
+        currentSearchCategory = cat;
+        searchCategorySelector.querySelectorAll('.category-pill').forEach(p => p.classList.toggle('active', p.dataset.searchCat === cat));
+        const srcSelector = document.getElementById('sourceSelector');
+        if (srcSelector) {
+          srcSelector.style.display = (cat === 'tracks') ? 'flex' : 'none';
+        }
+        const q = searchInput.value.trim() || currentSearchQuery;
+        if (q) {
+          performSearch(q);
+        } else {
+          searchInitialState.style.display = 'flex';
+          tracksList.style.display = 'none';
+          if (searchArtistsGrid) searchArtistsGrid.style.display = 'none';
+          resultsCount.textContent = '';
+        }
+      });
+    });
+  }
+
+  // Favorites Subtabs Switcher (Tracks vs Artists)
+  if (favSubtabs) {
+    favSubtabs.querySelectorAll('.fav-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.favTab;
+        if (!tab || tab === currentFavSubtab) return;
+        currentFavSubtab = tab;
+        favSubtabs.querySelectorAll('.fav-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.favTab === tab));
+        renderFavoritesView();
+      });
+    });
+  }
 
   // Render Track Rows
   function renderTrackRowElement(t, idx, getFullList, playlistContextId = null) {
@@ -2473,7 +2786,7 @@
       downloadBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (isTrackDownloaded(t) && !e.shiftKey) {
-          showToast(`Трек сохранен на диске (Downloads/SC-Player)`);
+          showToast(`Трек сохранен на диске (Documents/SC-Player)`);
           return;
         }
         triggerDownload(t, row, downloadBtn);
@@ -2965,6 +3278,13 @@
   // Playback Engine
   async function playTrack(track) {
     if (!track) return;
+
+    // Immediately halt previous track so its currentTime doesn't bleed into events
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+    } catch (e) {}
+
     initWebAudio();
     if (audioCtx && audioCtx.state === 'suspended') {
       audioCtx.resume();
@@ -2974,6 +3294,8 @@
     updatePlayerMeta(track);
     highlightPlayingRow();
     trackStatsRecorded = false;
+    trackActualListenSeconds = 0;
+    lastAudioTimeTick = Date.now();
     trackLastFmPlaybackStart = Math.floor(Date.now() / 1000);
     trackLastFmScrobbled = false;
     if (window.api && window.api.lastFmNowPlaying) {
@@ -3276,6 +3598,7 @@
   audio.addEventListener('play', () => {
     isPlaying = true;
     hlsRetryCount = 0;
+    lastAudioTimeTick = Date.now();
     iconPlay.style.display = 'none';
     iconPause.style.display = 'block';
     highlightPlayingRow();
@@ -3286,6 +3609,7 @@
 
   audio.addEventListener('pause', () => {
     isPlaying = false;
+    lastAudioTimeTick = 0;
     iconPlay.style.display = 'block';
     iconPause.style.display = 'none';
     highlightPlayingRow();
@@ -3308,13 +3632,22 @@
     syncDiscordPresence(true);
   });
 
+  let isSeeking = false;
+
+  function getAudioDuration() {
+    const validAudioDur = (audio.duration && Number.isFinite(audio.duration) && audio.duration > 0) ? audio.duration : 0;
+    const fallbackTrackDur = currentTrack?.durationMs ? (currentTrack.durationMs / 1000) : 0;
+    return validAudioDur || fallbackTrackDur || 0;
+  }
+
   audio.addEventListener('loadedmetadata', () => {
     applyDspConfig();
-    if (audio.duration && Number.isFinite(audio.duration)) {
-      totalDurationEl.textContent = formatTime(audio.duration);
+    const dur = getAudioDuration();
+    if (dur > 0) {
+      totalDurationEl.textContent = formatTime(dur);
       if (currentTrack && currentTrack.source === 'local') {
         if (!currentTrack.durationMs || currentTrack.durationMs === 0) {
-          currentTrack.durationMs = Math.round(audio.duration * 1000);
+          currentTrack.durationMs = Math.round(dur * 1000);
           saveLocalTracks();
         }
       }
@@ -3327,18 +3660,30 @@
   });
 
   audio.addEventListener('timeupdate', () => {
-    if (!audio.duration) return;
-    const cur = audio.currentTime;
-    const dur = audio.duration;
-    currentTimeEl.textContent = formatTime(cur);
-    totalDurationEl.textContent = formatTime(dur);
+    const dur = getAudioDuration();
+    if (dur <= 0) return;
+    const cur = audio.currentTime || 0;
 
-    const progress = (cur / dur) * 100;
-    seekSlider.value = progress;
-    seekFill.style.width = `${progress}%`;
+    if (!isSeeking) {
+      currentTimeEl.textContent = formatTime(cur);
+      totalDurationEl.textContent = formatTime(dur);
+      const progress = Math.min(100, (cur / dur) * 100);
+      seekSlider.value = progress;
+      seekFill.style.width = `${progress}%`;
+    }
 
     // Persist Session State Throttled (every 3s)
     const now = Date.now();
+    if (!audio.paused && !audio.seeking && isPlaying) {
+      if (lastAudioTimeTick > 0) {
+        const delta = (now - lastAudioTimeTick) / 1000;
+        if (delta > 0 && delta < 2.0) {
+          trackActualListenSeconds += delta;
+        }
+      }
+    }
+    lastAudioTimeTick = now;
+
     if (currentTrack && now - lastSessionSaveTime > 3000) {
       lastSessionSaveTime = now;
       try {
@@ -3357,9 +3702,12 @@
       recordTrackPlay(currentTrack);
     }
 
-    // Last.fm Scrobble: played >= 30s OR played >= 50%
-    if (!trackLastFmScrobbled && currentTrack && dur > 0 && !audio.paused) {
-      if (cur >= 30 || cur >= dur * 0.5) {
+    // Last.fm Scrobble: official rules
+    // 1. Track must be >= 30 seconds
+    // 2. User must have actually listened for >= 30 seconds AND (>= 50% of track OR 4 minutes)
+    if (!trackLastFmScrobbled && currentTrack && dur >= 30 && !audio.paused) {
+      const scrobbleThreshold = Math.min(dur * 0.5, 240);
+      if (trackActualListenSeconds >= 30 && trackActualListenSeconds >= scrobbleThreshold) {
         trackLastFmScrobbled = true;
         if (window.api && window.api.lastFmScrobble) {
           window.api.lastFmScrobble(currentTrack, trackLastFmPlaybackStart).then(res => {
@@ -3416,6 +3764,20 @@
       trackStatsRecorded = true;
       recordTrackPlay(currentTrack);
     }
+    const dur = getAudioDuration();
+    if (!trackLastFmScrobbled && currentTrack && dur >= 30) {
+      const scrobbleThreshold = Math.min(dur * 0.5, 240);
+      if (trackActualListenSeconds >= 30 && trackActualListenSeconds >= scrobbleThreshold) {
+        trackLastFmScrobbled = true;
+        if (window.api && window.api.lastFmScrobble) {
+          window.api.lastFmScrobble(currentTrack, trackLastFmPlaybackStart).then(res => {
+            if (res && res.success) {
+              showToast(`Scrobbled на Last.fm: ${res.artist} - ${res.title}`);
+            }
+          }).catch(() => {});
+        }
+      }
+    }
     if (repeatMode === 'one') {
       audio.currentTime = 0;
       audio.play();
@@ -3466,11 +3828,34 @@
     }
   });
 
+  seekSlider.addEventListener('mousedown', () => { isSeeking = true; });
+  seekSlider.addEventListener('touchstart', () => { isSeeking = true; }, { passive: true });
+
   seekSlider.addEventListener('input', () => {
-    if (!audio.duration) return;
-    const target = (seekSlider.value / 100) * audio.duration;
-    audio.currentTime = target;
+    isSeeking = true;
+    const dur = getAudioDuration();
+    if (dur > 0) {
+      const previewTime = (seekSlider.value / 100) * dur;
+      currentTimeEl.textContent = formatTime(previewTime);
+    }
     seekFill.style.width = `${seekSlider.value}%`;
+  });
+
+  function commitSeek() {
+    const dur = getAudioDuration();
+    if (dur > 0) {
+      const target = (seekSlider.value / 100) * dur;
+      audio.currentTime = target;
+    }
+    setTimeout(() => { isSeeking = false; }, 80);
+  }
+
+  seekSlider.addEventListener('change', commitSeek);
+  seekSlider.addEventListener('mouseup', () => {
+    if (isSeeking) commitSeek();
+  });
+  seekSlider.addEventListener('touchend', () => {
+    if (isSeeking) commitSeek();
   });
 
   // ==========================================
@@ -3714,6 +4099,9 @@
     }
     updateBadgeCounts();
     renderHomeView();
+    if (viewFavorites && viewFavorites.style.display !== 'none') {
+      renderFavoritesView();
+    }
 
     if (currentTrack && currentTrack.id === track.id) {
       playerLikeBtn.classList.toggle('liked', idx < 0);
@@ -3884,7 +4272,7 @@
   btnDownloadCurrent.addEventListener('click', () => {
     if (currentTrack) {
       if (isTrackDownloaded(currentTrack) || currentTrack._isDownloaded) {
-        showToast('Трек уже сохранен на диске (Downloads/SC-Player)');
+        showToast('Трек уже сохранен на диске (Documents/SC-Player)');
         return;
       }
       triggerDownload(currentTrack, null, btnDownloadCurrent);
@@ -3959,7 +4347,10 @@
     navigator.mediaSession.setActionHandler('previoustrack', playPrev);
     navigator.mediaSession.setActionHandler('nexttrack', playNext);
     navigator.mediaSession.setActionHandler('seekto', (details) => {
-      if (details.seekTime && audio.duration) audio.currentTime = details.seekTime;
+      const dur = getAudioDuration();
+      if (typeof details.seekTime === 'number' && dur > 0) {
+        audio.currentTime = Math.min(dur, Math.max(0, details.seekTime));
+      }
     });
   }
 
@@ -4020,9 +4411,10 @@
       e.preventDefault();
       togglePlay();
     } else if (e.code === 'ArrowRight') {
-      if (audio.duration) audio.currentTime = Math.min(audio.duration, audio.currentTime + 5);
+      const dur = getAudioDuration();
+      if (dur > 0) audio.currentTime = Math.min(dur, (audio.currentTime || 0) + 5);
     } else if (e.code === 'ArrowLeft') {
-      audio.currentTime = Math.max(0, audio.currentTime - 5);
+      audio.currentTime = Math.max(0, (audio.currentTime || 0) - 5);
     } else if (e.code === 'ArrowUp') {
       e.preventDefault();
       updateVolume(audio.volume + 0.05);
@@ -4036,6 +4428,9 @@
   refreshDownloadedMap().then(() => {
     updateBadgeCounts();
     renderHomeView();
+    if (viewFavorites && viewFavorites.style.display !== 'none') {
+      renderFavoritesView();
+    }
     if (currentTrack) updatePlayerMeta(currentTrack);
   });
   window.addEventListener('focus', () => {

@@ -5130,3 +5130,310 @@ body::after {
   z-index: 3;
 }
 
+
+/* ==========================================================================
+   SEARCH ARTISTS & FAVORITE ARTISTS SYSTEM
+   ========================================================================== */
+.search-category-selector {
+  display: flex;
+  align-items: center;
+  background: rgba(10, 15, 26, 0.75);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  gap: 4px;
+}
+
+.category-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-tech);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.category-pill:hover {
+  color: #fff;
+  background: rgba(0, 240, 255, 0.08);
+}
+
+.category-pill.active {
+  background: rgba(0, 240, 255, 0.18);
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.3);
+}
+
+/* Artist Favorite Button in Artist Header */
+.btn-artist-fav {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-family: var(--font-tech);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-artist-fav svg {
+  width: 16px;
+  height: 16px;
+  transition: all 0.2s ease;
+}
+
+.btn-artist-fav:hover {
+  border-color: var(--neon-magenta);
+  color: var(--neon-magenta);
+  background: rgba(255, 0, 85, 0.1);
+  box-shadow: 0 0 14px rgba(255, 0, 85, 0.3);
+}
+
+.btn-artist-fav.liked {
+  border-color: var(--neon-magenta);
+  color: #fff;
+  background: linear-gradient(135deg, rgba(255, 0, 85, 0.3) 0%, rgba(255, 0, 128, 0.15) 100%);
+  box-shadow: 0 0 18px rgba(255, 0, 85, 0.45);
+}
+
+.btn-artist-fav.liked svg {
+  fill: var(--neon-magenta);
+  stroke: var(--neon-magenta);
+  filter: drop-shadow(0 0 6px var(--neon-magenta));
+}
+
+/* Favorites Subtabs (Tracks vs Artists) */
+.fav-subtabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(10, 15, 26, 0.85);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+}
+
+.fav-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-tech);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 6px 14px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.fav-tab-btn:hover {
+  color: #fff;
+  background: rgba(0, 240, 255, 0.08);
+}
+
+.fav-tab-btn.active {
+  background: var(--neon-cyan);
+  color: #07090e;
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 16px rgba(0, 240, 255, 0.45);
+}
+
+.fav-tab-btn .tab-badge {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.fav-tab-btn.active .tab-badge {
+  background: #07090e;
+  color: var(--neon-cyan);
+}
+
+/* Artists Grid & Artist Card */
+.artists-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 20px;
+  padding: 10px 0 30px;
+  width: 100%;
+}
+
+.artist-card {
+  position: relative;
+  background: var(--cyber-card);
+  border: 1px solid rgba(0, 240, 255, 0.18);
+  border-radius: var(--radius-sm);
+  padding: 20px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: all 0.28s var(--ease-cyber);
+  overflow: hidden;
+}
+
+.artist-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.artist-card:hover {
+  background: var(--cyber-card-hover);
+  border-color: var(--neon-cyan);
+  transform: translateY(-5px);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.8), 0 0 22px rgba(0, 240, 255, 0.25);
+}
+
+.artist-card:hover::before {
+  opacity: 1;
+}
+
+.artist-card-avatar-box {
+  position: relative;
+  width: 104px;
+  height: 104px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 2px solid rgba(0, 240, 255, 0.35);
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.6);
+  transition: all 0.3s ease;
+}
+
+.artist-card:hover .artist-card-avatar-box {
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 24px rgba(0, 240, 255, 0.5);
+  transform: scale(1.05);
+}
+
+.artist-card-avatar-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+
+.artist-card-avatar-box .avatar-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-tech);
+  font-size: 32px;
+  font-weight: 800;
+  background: linear-gradient(135deg, #121829, #1c253d);
+  color: var(--neon-cyan);
+}
+
+.artist-card-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+
+.artist-card-name {
+  font-family: var(--font-tech);
+  font-size: 14.5px;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.artist-card-name .verified-badge {
+  color: var(--neon-cyan);
+  font-size: 12px;
+}
+
+.artist-card-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.artist-card-meta strong {
+  color: var(--neon-cyan);
+}
+
+.artist-card-fav-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 2;
+}
+
+.artist-card-fav-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.artist-card-fav-btn:hover {
+  border-color: var(--neon-magenta);
+  color: var(--neon-magenta);
+  transform: scale(1.15);
+  box-shadow: 0 0 10px rgba(255, 0, 85, 0.4);
+}
+
+.artist-card-fav-btn.liked {
+  border-color: var(--neon-magenta);
+  color: var(--neon-magenta);
+  background: rgba(255, 0, 85, 0.2);
+}
+
+.artist-card-fav-btn.liked svg {
+  fill: var(--neon-magenta);
+  stroke: var(--neon-magenta);
+}
