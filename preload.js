@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('api', {
   getArtistProfile: (artistId) => ipcRenderer.invoke('get-artist-profile', artistId),
   resolveStream: (track) => ipcRenderer.invoke('resolve-stream', track),
   downloadTrack: (track) => ipcRenderer.invoke('download-track', track),
+  getDownloadedTracksInfo: () => ipcRenderer.invoke('get-downloaded-tracks-info'),
+  checkTrackDownloaded: (track) => ipcRenderer.invoke('is-track-downloaded', track),
   getLyrics: (track) => ipcRenderer.invoke('get-lyrics', track),
   searchLyricsQuery: (query) => ipcRenderer.invoke('search-lyrics-query', query),
   openDownloadDir: () => ipcRenderer.invoke('open-download-dir'),

@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net } = require('electron');
+const { pathToFileURL } = require('url');
 const path = require('path');
 const https = require('https');
 const http = require('http');
@@ -14,6 +15,40 @@ let mainWindow = null;
 let cachedClientId = 'qLcgHhXgeEFFaSolTB9I71LBsqncsD93'; // Fallback default
 let lastClientFetchTime = 0;
 let isYtDlpAvailable = false;
+
+// 1. Привилегированный протокол для безопасного стриминга локальных треков без отключения webSecurity
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'pulse-audio',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true,
+      bypassCSP: false
+    }
+  }
+]);
+
+// 8. Безопасное открытие внешних ссылок (только http/https)
+function safeOpenExternal(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      shell.openExternal(url);
+    }
+  } catch (e) {}
+}
+
+// 5. Валидация объектов треков во всех IPC-хендлерах
+function validateTrack(track) {
+  if (!track || typeof track !== 'object') return null;
+  if (typeof track.title !== 'string' || track.title.length > 500) return null;
+  if (typeof track.artist !== 'string' || track.artist.length > 500) return null;
+  if (track.permalinkUrl && !/^https?:\/\//i.test(track.permalinkUrl) && track.source !== 'local') return null;
+  return track;
+}
 
 function checkYtDlp() {
   return new Promise((resolve) => {
@@ -473,6 +508,9 @@ async function resolveYouTubeStream(track) {
   if (!isYtDlpAvailable) {
     throw new Error('yt-dlp не установлен в системе (добавьте yt-dlp в PATH)');
   }
+  if (!track.permalinkUrl || !/^https?:\/\/(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)\//i.test(track.permalinkUrl)) {
+    throw new Error('Недопустимый URL YouTube');
+  }
   return new Promise((resolve, reject) => {
     const proc = spawn('yt-dlp', [
       '-f', 'bestaudio',
@@ -508,6 +546,40 @@ function getDownloadDir() {
 
 function sanitizeFilename(name) {
   return name.replace(/[\\/:*?"<>|]/g, '_').substring(0, 100);
+}
+
+function findDownloadedTrackFile(track) {
+  if (!track) return null;
+  const downloadDir = getDownloadDir();
+  const safeArtist = sanitizeFilename(track.artist || 'Unknown');
+  const safeTitle = sanitizeFilename(track.title || 'Untitled');
+  const directPath = path.join(downloadDir, `${safeArtist} - ${safeTitle}.mp3`);
+  try {
+    if (fs.existsSync(directPath)) {
+      const stat = fs.statSync(directPath);
+      if (stat.size >= 10240) return directPath;
+    }
+  } catch (e) {}
+
+  try {
+    if (fs.existsSync(downloadDir)) {
+      const files = fs.readdirSync(downloadDir);
+      const targetBase = `${safeArtist} - ${safeTitle}`.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+      if (targetBase.length > 0) {
+        for (const file of files) {
+          if (file.toLowerCase().endsWith('.mp3')) {
+            const fileBase = file.slice(0, -4).toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+            if (fileBase === targetBase) {
+              const full = path.join(downloadDir, file);
+              const stat = fs.statSync(full);
+              if (stat.size >= 10240) return full;
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {}
+  return null;
 }
 
 function downloadHttpFile(initialUrl, destPath, maxRedirects = 5) {
@@ -615,6 +687,9 @@ async function downloadTrack(track) {
   if (track.source === 'soundcloud') {
     try {
       const resolved = await resolveSoundCloudStream(track);
+      if (!resolved.streamUrl || !/^https?:\/\//i.test(resolved.streamUrl)) {
+        throw new Error('Недопустимый URL потока');
+      }
       if (resolved.protocol === 'progressive') {
         await downloadHttpFile(resolved.streamUrl, partPath);
         fs.renameSync(partPath, destPath);
@@ -844,6 +919,9 @@ function downloadWithYtDlp(url, destPath) {
   if (!isYtDlpAvailable) {
     return Promise.reject(new Error('yt-dlp не установлен в системе (добавьте yt-dlp в PATH)'));
   }
+  if (!url || !/^https?:\/\/(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)\//i.test(url)) {
+    return Promise.reject(new Error('Недопустимый URL для yt-dlp'));
+  }
   const cleanDest = destPath.replace(/\.part$/, '');
   const outTemplate = cleanDest.endsWith('.mp3') ? cleanDest.slice(0, -4) + '.%(ext)s' : cleanDest + '.%(ext)s';
 
@@ -892,7 +970,22 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      webSecurity: false
+      sandbox: true,
+      webSecurity: true
+    }
+  });
+
+  // 2. setWindowOpenHandler — блокировка window.open (открытие только в системном браузере)
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    safeOpenExternal(url);
+    return { action: 'deny' };
+  });
+
+  // 3. will-navigate — запрет перехода по ссылкам внутри окна Electron
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('file://')) {
+      event.preventDefault();
+      safeOpenExternal(url);
     }
   });
 
@@ -912,6 +1005,37 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // Безопасный стриминг локальных треков через pulse-audio протокол
+  protocol.handle('pulse-audio', async (request) => {
+    try {
+      let rawPath = request.url.replace(/^pulse-audio:\/\/(?:stream)?\/?/i, '');
+      let filePath = decodeURIComponent(rawPath);
+      if (process.platform === 'win32' && filePath.startsWith('/')) {
+        filePath = filePath.slice(1);
+      }
+      filePath = path.normalize(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+      const allowed = ['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.opus', '.wma'];
+      if (!allowed.includes(ext) || !fs.existsSync(filePath)) {
+        console.warn('[PULSE-AUDIO] Файл не найден или недопустим:', filePath);
+        return new Response('Forbidden', { status: 403 });
+      }
+      const fileRes = await net.fetch(pathToFileURL(filePath).toString());
+      const headers = new Headers(fileRes.headers);
+      headers.set('Access-Control-Allow-Origin', '*');
+      headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      headers.set('Access-Control-Allow-Headers', '*');
+      return new Response(fileRes.body, {
+        status: fileRes.status,
+        statusText: fileRes.statusText,
+        headers
+      });
+    } catch (e) {
+      console.error('[PULSE-AUDIO] Ошибка обработки:', e);
+      return new Response('Internal Server Error', { status: 500 });
+    }
+  });
+
   await checkYtDlp();
   createWindow();
   discordRpc.init();
@@ -931,18 +1055,41 @@ app.whenReady().then(async () => {
     return await getRelatedTracks(trackId);
   });
 
+  // 6. Защита resolve-stream от чтения произвольных файлов и валидация
   ipcMain.handle('resolve-stream', async (_, track) => {
-    if (track.source === 'local') {
-      const p = track.filePath || '';
-      const fileUrl = p.startsWith('file://') ? p : `file:///${p.replace(/\\/g, '/')}`;
+    const valid = validateTrack(track);
+    if (!valid) throw new Error('Недопустимый объект трека');
+
+    if (valid.source === 'local') {
+      const p = valid.filePath || '';
+      const ext = path.extname(p).toLowerCase();
+      const allowed = ['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.opus', '.wma'];
+      if (!allowed.includes(ext) || !fs.existsSync(p)) {
+        throw new Error('Недопустимый путь к файлу');
+      }
       return {
-        streamUrl: fileUrl,
+        streamUrl: `pulse-audio://stream/${encodeURIComponent(p.replace(/\\/g, '/'))}`,
         protocol: 'progressive',
-        mimeType: 'audio/mpeg'
+        mimeType: 'audio/mpeg',
+        isLocal: true,
+        localPath: p
       };
     }
-    if (track.source === 'youtube') return await resolveYouTubeStream(track);
-    return await resolveSoundCloudStream(track);
+
+    // Автоматическая загрузка трека с локального диска, если он скачан
+    const downloadedPath = findDownloadedTrackFile(valid);
+    if (downloadedPath) {
+      return {
+        streamUrl: `pulse-audio://stream/${encodeURIComponent(downloadedPath.replace(/\\/g, '/'))}`,
+        protocol: 'progressive',
+        mimeType: 'audio/mpeg',
+        isLocal: true,
+        localPath: downloadedPath
+      };
+    }
+
+    if (valid.source === 'youtube') return await resolveYouTubeStream(valid);
+    return await resolveSoundCloudStream(valid);
   });
 
   ipcMain.handle('open-local-files', async () => {
@@ -990,14 +1137,57 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('download-track', async (_, track) => {
-    return await downloadTrack(track);
+    const valid = validateTrack(track);
+    if (!valid) throw new Error('Недопустимый объект трека');
+    return await downloadTrack(valid);
+  });
+
+  ipcMain.handle('get-downloaded-tracks-info', async () => {
+    try {
+      const downloadDir = getDownloadDir();
+      if (!fs.existsSync(downloadDir)) return [];
+      const files = fs.readdirSync(downloadDir);
+      const result = [];
+      for (const file of files) {
+        if (file.toLowerCase().endsWith('.mp3')) {
+          const filePath = path.join(downloadDir, file);
+          try {
+            const stat = fs.statSync(filePath);
+            if (stat.size >= 10240) {
+              const baseName = file.slice(0, -4);
+              const baseKey = baseName.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+              result.push({
+                fileName: file,
+                baseKey,
+                baseName,
+                filePath,
+                size: stat.size
+              });
+            }
+          } catch (e) {}
+        }
+      }
+      return result;
+    } catch (e) {
+      console.warn('Failed to read downloaded tracks:', e);
+      return [];
+    }
+  });
+
+  ipcMain.handle('is-track-downloaded', async (_, track) => {
+    const valid = validateTrack(track);
+    if (!valid) return false;
+    return Boolean(findDownloadedTrackFile(valid));
   });
 
   ipcMain.handle('get-lyrics', async (_, track) => {
-    return await fetchLyrics(track);
+    const valid = validateTrack(track);
+    if (!valid) return { error: 'Invalid track data' };
+    return await fetchLyrics(valid);
   });
 
   ipcMain.handle('search-lyrics-query', async (_, query) => {
+    if (typeof query !== 'string') return [];
     return await searchLyricsManual(query);
   });
 
@@ -1039,7 +1229,13 @@ app.whenReady().then(async () => {
   }
 
   ipcMain.handle('update-discord-rpc', async (_, data) => {
-    if (data && data.track && (!data.track.artworkUrl || !data.track.artworkUrl.startsWith('http'))) {
+    if (!data || typeof data !== 'object') return discordRpc.getStatus();
+    if (data.track) {
+      const valid = validateTrack(data.track);
+      if (!valid) return discordRpc.getStatus();
+      data.track = valid;
+    }
+    if (data.track && (!data.track.artworkUrl || !data.track.artworkUrl.startsWith('http'))) {
       const cleanArtist = (data.track.artist || '').replace(/\s*\(.*\)/g, '').trim();
       const cleanTitle = (data.track.title || '').replace(/\s*\(.*\)/g, '').trim();
       const key = `${cleanArtist.toLowerCase()}:::${cleanTitle.toLowerCase()}`;
@@ -1107,13 +1303,18 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('lastfm-now-playing', async (_, track) => {
     if (!lastFm) return false;
-    await lastFm.updateNowPlaying(track);
+    const valid = validateTrack(track);
+    if (!valid) return false;
+    await lastFm.updateNowPlaying(valid);
     return true;
   });
 
-  ipcMain.handle('lastfm-scrobble', async (_, { track, timestamp }) => {
+  ipcMain.handle('lastfm-scrobble', async (_, { track, timestamp } = {}) => {
     if (!lastFm) return { success: false };
-    return await lastFm.scrobble(track, timestamp);
+    const valid = validateTrack(track);
+    if (!valid) return { success: false, error: 'Invalid track data' };
+    const ts = (typeof timestamp === 'number' && timestamp > 0) ? timestamp : Math.floor(Date.now() / 1000);
+    return await lastFm.scrobble(valid, ts);
   });
 
   ipcMain.handle('get-favorites-backup', () => {

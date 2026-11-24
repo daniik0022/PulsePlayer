@@ -11,6 +11,8 @@ out/
 favorites_backup.json
 playlists_backup.json
 config.json
+.env
+.env.local
 
 # Local logs & dev notes
 *.log

@@ -4,8 +4,12 @@ const fs = require('fs');
 const path = require('path');
 const { app, shell } = require('electron');
 
-const API_KEY = '9dd76c110427dd589152389ba8768c8d';
-const SHARED_SECRET = 'bbd55aaa7e35834f3fbc3aa29ec9039a';
+try {
+  require('dotenv').config();
+} catch (e) {}
+
+const API_KEY = process.env.LASTFM_API_KEY || '9dd76c110427dd589152389ba8768c8d';
+const SHARED_SECRET = process.env.LASTFM_SHARED_SECRET || 'bbd55aaa7e35834f3fbc3aa29ec9039a';
 const API_ROOT = 'https://ws.audioscrobbler.com/2.0/';
 
 function cleanMetadata(str) {
@@ -155,7 +159,12 @@ class LastFmManager {
       this.pendingToken = res.token;
 
       const authUrl = `https://www.last.fm/api/auth/?api_key=${API_KEY}&token=${this.pendingToken}`;
-      shell.openExternal(authUrl);
+      try {
+        const parsed = new URL(authUrl);
+        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+          shell.openExternal(authUrl);
+        }
+      } catch (e) {}
 
       return { success: true, token: this.pendingToken, authUrl };
     } catch (e) {

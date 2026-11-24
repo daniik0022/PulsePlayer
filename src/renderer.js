@@ -21,6 +21,14 @@
       .replace(/'/g, '&#039;');
   }
 
+  // 4. Санитизация URL для защиты от javascript: и сторонних протоколов
+  function safeUrl(url) {
+    if (!url) return '';
+    const clean = String(url).trim();
+    if (/^(https?:\/\/|data:image\/|pulse-audio:\/\/|file:\/\/)/i.test(clean)) return clean;
+    return '';
+  }
+
   // Clean initial state wipe for distribution
   if (localStorage.getItem('pulse_clean_v1') !== 'true') {
     localStorage.removeItem('pulse_favorites');
@@ -70,6 +78,67 @@
   let isVisualizerActive = true;
   let hlsInstance = null;
   let hlsRetryCount = 0;
+
+  // Downloaded Tracks Cache & Local-first Engine
+  let downloadedKeys = new Set();
+
+  function normalizeTrackKey(artist, title) {
+    const safeArtist = (artist || '').replace(/[\\/:*?"<>|]/g, '_').substring(0, 100);
+    const safeTitle = (title || '').replace(/[\\/:*?"<>|]/g, '_').substring(0, 100);
+    return `${safeArtist} - ${safeTitle}`.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  }
+
+  function isTrackDownloaded(track) {
+    if (!track) return false;
+    if (track.source === 'local') return true;
+    if (track._isDownloaded) return true;
+    const key = normalizeTrackKey(track.artist, track.title);
+    return downloadedKeys.has(key);
+  }
+
+  async function refreshDownloadedMap() {
+    try {
+      if (window.api && window.api.getDownloadedTracksInfo) {
+        const list = await window.api.getDownloadedTracksInfo();
+        if (Array.isArray(list)) {
+          downloadedKeys = new Set(list.map(item => item.baseKey));
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to refresh downloaded tracks map:', e);
+    }
+  }
+
+  function updateTrackRowsDownloadedState(track) {
+    if (!track) return;
+    const key = normalizeTrackKey(track.artist, track.title);
+    const allRows = document.querySelectorAll('.track-row');
+    allRows.forEach(row => {
+      const titleEl = row.querySelector('.row-title');
+      const artistEl = row.querySelector('.row-artist-link');
+      const rowId = row.dataset.id;
+      const isMatch = (rowId && String(rowId) === String(track.id)) || 
+        (titleEl && artistEl && normalizeTrackKey(artistEl.textContent, titleEl.textContent) === key);
+      
+      if (isMatch) {
+        const badge = row.querySelector('.row-source-badge');
+        if (badge && !badge.classList.contains('badge-local')) {
+          badge.className = 'row-source-badge badge-downloaded';
+          badge.textContent = 'СКАЧАН';
+        }
+        const dlBtn = row.querySelector('.btn-download');
+        if (dlBtn) {
+          dlBtn.classList.add('downloaded');
+          dlBtn.title = 'Скачан на диск (играет без сети)';
+          dlBtn.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          `;
+        }
+      }
+    });
+  }
 
   // High-Quality Shuffle Engine (Fisher-Yates Deck + History Stack)
   let shuffleDeck = [];
@@ -241,6 +310,28 @@
   const iconVolHigh = document.getElementById('iconVolHigh');
   const iconVolMuted = document.getElementById('iconVolMuted');
   const btnVisualizer = document.getElementById('btnVisualizer');
+  const btnRemixLab = document.getElementById('btnRemixLab');
+  const remixActiveBadge = document.getElementById('remixActiveBadge');
+  const remixLabModal = document.getElementById('remixLabModal');
+  const btnCloseRemixLab = document.getElementById('btnCloseRemixLab');
+  const btnResetRemixLab = document.getElementById('btnResetRemixLab');
+  const sliderRemixSpeed = document.getElementById('sliderRemixSpeed');
+  const fillRemixSpeed = document.getElementById('fillRemixSpeed');
+  const valRemixSpeed = document.getElementById('valRemixSpeed');
+  const btnPitchVinyl = document.getElementById('btnPitchVinyl');
+  const btnPitchLock = document.getElementById('btnPitchLock');
+  const sliderRemixReverb = document.getElementById('sliderRemixReverb');
+  const fillRemixReverb = document.getElementById('fillRemixReverb');
+  const valRemixReverb = document.getElementById('valRemixReverb');
+  const sliderRemixDecay = document.getElementById('sliderRemixDecay');
+  const fillRemixDecay = document.getElementById('fillRemixDecay');
+  const valRemixDecay = document.getElementById('valRemixDecay');
+  const sliderRemixBass = document.getElementById('sliderRemixBass');
+  const fillRemixBass = document.getElementById('fillRemixBass');
+  const valRemixBass = document.getElementById('valRemixBass');
+  const sliderRemixTreble = document.getElementById('sliderRemixTreble');
+  const fillRemixTreble = document.getElementById('fillRemixTreble');
+  const valRemixTreble = document.getElementById('valRemixTreble');
   const btnDiscord = document.getElementById('btnDiscord');
   const btnToggleLyricsFormat = document.getElementById('btnToggleLyricsFormat');
   const lyricsFormatLabel = document.getElementById('lyricsFormatLabel');
@@ -869,10 +960,128 @@
     });
   }
 
-  // Web Audio Context for Spectrum Visualizer
+  // Web Audio Context & Studio DSP Chain (Audio Lab: Slowed, Speed Up & Reverb)
   let audioCtx = null;
   let analyser = null;
   let dataArray = null;
+  let sourceNode = null;
+  let bassFilterNode = null;
+  let trebleFilterNode = null;
+  let dryGainNode = null;
+  let wetGainNode = null;
+  let convolverNode = null;
+  let reverbDampFilter = null;
+  let compressorNode = null;
+  let mixBusNode = null;
+
+  const REMIX_PRESETS = {
+    normal: {
+      speed: 1.0,
+      vinylPitch: true,
+      reverbWet: 0.0,
+      reverbDecay: 2.6,
+      bassBoost: 0.0,
+      treble: 0.0,
+      preset: 'normal'
+    },
+    slowed: {
+      speed: 0.83,
+      vinylPitch: true,
+      reverbWet: 0.38,
+      reverbDecay: 3.2,
+      bassBoost: 4.5,
+      treble: -1.0,
+      preset: 'slowed'
+    },
+    nightcore: {
+      speed: 1.25,
+      vinylPitch: true,
+      reverbWet: 0.0,
+      reverbDecay: 2.0,
+      bassBoost: 2.0,
+      treble: 2.5,
+      preset: 'nightcore'
+    },
+    chopped: {
+      speed: 0.76,
+      vinylPitch: true,
+      reverbWet: 0.22,
+      reverbDecay: 2.2,
+      bassBoost: 6.5,
+      treble: -2.0,
+      preset: 'chopped'
+    },
+    space: {
+      speed: 0.88,
+      vinylPitch: true,
+      reverbWet: 0.60,
+      reverbDecay: 4.5,
+      bassBoost: 3.0,
+      treble: 1.0,
+      preset: 'space'
+    },
+    clean: {
+      speed: 1.15,
+      vinylPitch: false,
+      reverbWet: 0.0,
+      reverbDecay: 2.0,
+      bassBoost: 0.0,
+      treble: 0.0,
+      preset: 'clean'
+    }
+  };
+
+  let dspConfig = {
+    speed: 1.0,
+    vinylPitch: true,
+    reverbWet: 0.0,
+    reverbDecay: 2.6,
+    bassBoost: 0.0,
+    treble: 0.0,
+    preset: 'normal'
+  };
+
+  try {
+    const savedDsp = localStorage.getItem('pulse_dsp_config');
+    if (savedDsp) {
+      const parsed = JSON.parse(savedDsp);
+      if (parsed && typeof parsed === 'object') {
+        Object.assign(dspConfig, parsed);
+      }
+    }
+  } catch (e) {}
+
+  function saveDspConfig() {
+    try {
+      localStorage.setItem('pulse_dsp_config', JSON.stringify(dspConfig));
+    } catch (e) {}
+  }
+
+  // Generates algorithmic stereo impulse response for rich spacious reverb
+  function buildImpulseResponse(durationSec, decayFactor, sampleRate) {
+    const length = Math.max(1024, Math.floor(sampleRate * durationSec));
+    const impulse = audioCtx.createBuffer(2, length, sampleRate);
+    const left = impulse.getChannelData(0);
+    const right = impulse.getChannelData(1);
+
+    for (let i = 0; i < length; i++) {
+      const t = i / length;
+      const env = Math.pow(1 - t, decayFactor);
+      const earlyBoost = (i < sampleRate * 0.03) ? 1.5 : 1.0;
+      left[i] = (Math.random() * 2 - 1) * env * earlyBoost;
+      right[i] = (Math.random() * 2 - 1) * env * earlyBoost;
+    }
+    return impulse;
+  }
+
+  function updateReverbImpulse(decaySec = 2.6) {
+    if (!audioCtx || !convolverNode) return;
+    try {
+      convolverNode.buffer = buildImpulseResponse(decaySec, 2.6, audioCtx.sampleRate);
+    } catch (e) {
+      console.warn('[AUDIO LAB] Reverb impulse generation error:', e);
+    }
+  }
 
   function initWebAudio() {
     if (audioCtx) return;
@@ -880,13 +1089,163 @@
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 128;
-      const source = audioCtx.createMediaElementSource(audio);
-      source.connect(analyser);
-      analyser.connect(audioCtx.destination);
       dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      sourceNode = audioCtx.createMediaElementSource(audio);
+
+      // Low-shelf filter for rich resonant bass (808s / kicks)
+      bassFilterNode = audioCtx.createBiquadFilter();
+      bassFilterNode.type = 'lowshelf';
+      bassFilterNode.frequency.value = 110;
+      bassFilterNode.gain.value = dspConfig.bassBoost;
+
+      // High-shelf filter for airy brilliance or vintage tape warmth
+      trebleFilterNode = audioCtx.createBiquadFilter();
+      trebleFilterNode.type = 'highshelf';
+      trebleFilterNode.frequency.value = 7500;
+      trebleFilterNode.gain.value = dspConfig.treble;
+
+      // Dry branch
+      dryGainNode = audioCtx.createGain();
+      dryGainNode.gain.value = 1.0;
+
+      // Reverb branch: Lowpass filter (analog warmth, no harsh high sibilance) -> Convolver -> Wet Gain
+      reverbDampFilter = audioCtx.createBiquadFilter();
+      reverbDampFilter.type = 'lowpass';
+      reverbDampFilter.frequency.value = 4500;
+
+      convolverNode = audioCtx.createConvolver();
+      updateReverbImpulse(dspConfig.reverbDecay);
+
+      wetGainNode = audioCtx.createGain();
+      wetGainNode.gain.value = 0.0;
+
+      // Mix Bus
+      mixBusNode = audioCtx.createGain();
+
+      // Studio-grade Dynamics Compressor (Zero-clipping peak limiter for crystal clean output)
+      compressorNode = audioCtx.createDynamicsCompressor();
+      compressorNode.threshold.value = -1.5;
+      compressorNode.knee.value = 6;
+      compressorNode.ratio.value = 12;
+      compressorNode.attack.value = 0.003;
+      compressorNode.release.value = 0.15;
+
+      // Connect DSP chain:
+      // source -> bassFilter -> trebleFilter
+      sourceNode.connect(bassFilterNode);
+      bassFilterNode.connect(trebleFilterNode);
+
+      // Dry path
+      trebleFilterNode.connect(dryGainNode);
+      dryGainNode.connect(mixBusNode);
+
+      // Wet Reverb path
+      trebleFilterNode.connect(reverbDampFilter);
+      reverbDampFilter.connect(convolverNode);
+      convolverNode.connect(wetGainNode);
+      wetGainNode.connect(mixBusNode);
+
+      // Output path: mix -> limiter -> analyser -> speakers
+      mixBusNode.connect(compressorNode);
+      compressorNode.connect(analyser);
+      analyser.connect(audioCtx.destination);
+
+      applyDspConfig();
       renderVisualizer();
     } catch (e) {
       console.warn('Web Audio init skipped:', e);
+    }
+  }
+
+  function applyDspConfig() {
+    initWebAudio();
+
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(() => {});
+    }
+
+    const spd = Math.max(0.5, Math.min(1.75, Number(dspConfig.speed) || 1.0));
+    if (audio) {
+      audio.playbackRate = spd;
+      const preserves = !dspConfig.vinylPitch;
+      audio.preservesPitch = preserves;
+      if ('webkitPreservesPitch' in audio) audio.webkitPreservesPitch = preserves;
+      if ('mozPreservesPitch' in audio) audio.mozPreservesPitch = preserves;
+    }
+
+    const cTime = audioCtx ? audioCtx.currentTime : 0;
+
+    if (dryGainNode && wetGainNode) {
+      const wet = Math.max(0, Math.min(1, Number(dspConfig.reverbWet) || 0));
+      const dry = Math.max(0.65, 1.0 - (wet * 0.45));
+      dryGainNode.gain.setTargetAtTime(dry, cTime, 0.03);
+      wetGainNode.gain.setTargetAtTime(wet, cTime, 0.03);
+    }
+
+    if (bassFilterNode) {
+      const bb = Number(dspConfig.bassBoost) || 0;
+      bassFilterNode.gain.setTargetAtTime(bb, cTime, 0.03);
+    }
+
+    if (trebleFilterNode) {
+      const tr = Number(dspConfig.treble) || 0;
+      trebleFilterNode.gain.setTargetAtTime(tr, cTime, 0.03);
+    }
+
+    updateRemixLabUI();
+  }
+
+  function updateRemixLabUI() {
+    if (sliderRemixSpeed) {
+      sliderRemixSpeed.value = dspConfig.speed;
+      valRemixSpeed.textContent = Number(dspConfig.speed).toFixed(2) + 'x';
+      fillRemixSpeed.style.width = ((dspConfig.speed - 0.5) / (1.75 - 0.5) * 100) + '%';
+    }
+
+    if (btnPitchVinyl && btnPitchLock) {
+      btnPitchVinyl.classList.toggle('active', !!dspConfig.vinylPitch);
+      btnPitchLock.classList.toggle('active', !dspConfig.vinylPitch);
+    }
+
+    if (sliderRemixReverb) {
+      sliderRemixReverb.value = dspConfig.reverbWet;
+      valRemixReverb.textContent = Math.round(dspConfig.reverbWet * 100) + '%';
+      fillRemixReverb.style.width = (dspConfig.reverbWet * 100) + '%';
+    }
+
+    if (sliderRemixDecay) {
+      sliderRemixDecay.value = dspConfig.reverbDecay;
+      valRemixDecay.textContent = Number(dspConfig.reverbDecay).toFixed(1) + 's';
+      fillRemixDecay.style.width = ((dspConfig.reverbDecay - 1.0) / 4.0 * 100) + '%';
+    }
+
+    if (sliderRemixBass) {
+      sliderRemixBass.value = dspConfig.bassBoost;
+      valRemixBass.textContent = (dspConfig.bassBoost >= 0 ? '+' : '') + Number(dspConfig.bassBoost).toFixed(1) + ' dB';
+      fillRemixBass.style.width = ((dspConfig.bassBoost - (-4)) / (10 - (-4)) * 100) + '%';
+    }
+
+    if (sliderRemixTreble) {
+      sliderRemixTreble.value = dspConfig.treble;
+      valRemixTreble.textContent = (dspConfig.treble >= 0 ? '+' : '') + Number(dspConfig.treble).toFixed(1) + ' dB';
+      fillRemixTreble.style.width = ((dspConfig.treble - (-6)) / (6 - (-6)) * 100) + '%';
+    }
+
+    document.querySelectorAll('.remix-preset-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.preset === dspConfig.preset);
+    });
+
+    const isModified = Math.abs(dspConfig.speed - 1.0) > 0.01 || dspConfig.reverbWet > 0.01 || Math.abs(dspConfig.bassBoost) > 0.5 || Math.abs(dspConfig.treble) > 0.5;
+    if (btnRemixLab) {
+      btnRemixLab.classList.toggle('active', isModified);
+    }
+    if (remixActiveBadge) {
+      remixActiveBadge.style.display = isModified ? 'block' : 'none';
+      if (dspConfig.preset === 'slowed') remixActiveBadge.textContent = 'SLOW';
+      else if (dspConfig.preset === 'nightcore') remixActiveBadge.textContent = 'SPEED';
+      else if (dspConfig.preset === 'chopped') remixActiveBadge.textContent = 'CHOP';
+      else remixActiveBadge.textContent = 'FX';
     }
   }
 
@@ -1144,13 +1503,31 @@
       viewSearch.style.display = 'flex';
       const nav = document.querySelector('.nav-item[data-tab="search"]');
       if (nav) nav.classList.add('active');
-      viewTitle.textContent = 'Поиск треков';
       document.getElementById('sourceSelector').style.display = 'flex';
-      if (!searchInput.value.trim()) {
+
+      if (currentSearchQuery) {
+        viewTitle.textContent = `Поиск: "${currentSearchQuery}"`;
+        if (currentSearchResults && currentSearchResults.length > 0) {
+          resultsCount.textContent = `${currentSearchResults.length} треков`;
+          searchInitialState.style.display = 'none';
+          tracksList.style.display = 'flex';
+          renderTrackRows(currentSearchResults, tracksList);
+          if (searchMoreContainer) {
+            searchMoreContainer.style.display = currentSearchHasMore ? 'flex' : 'none';
+          }
+        } else {
+          resultsCount.textContent = '0 треков';
+          searchInitialState.style.display = 'none';
+          tracksList.style.display = 'flex';
+          tracksList.innerHTML = `<div class="empty-state"><h3>Ничего не найдено</h3><p>Попробуй изменить поисковый запрос</p></div>`;
+          if (searchMoreContainer) searchMoreContainer.style.display = 'none';
+        }
+      } else {
+        viewTitle.textContent = 'Поиск треков';
+        resultsCount.textContent = '';
         searchInitialState.style.display = 'flex';
         tracksList.style.display = 'none';
-      } else if (currentSearchHasMore) {
-        if (searchMoreContainer) searchMoreContainer.style.display = 'flex';
+        if (searchMoreContainer) searchMoreContainer.style.display = 'none';
       }
     } else if (viewName === 'local') {
       viewSearch.style.display = 'flex';
@@ -1328,7 +1705,7 @@
 
       card.innerHTML = `
         <div class="card-artwork-box">
-          ${t.artworkUrl ? `<img src="${t.artworkUrl}" alt="Cover" loading="lazy">` : `<div class="artwork-fallback" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:2.2rem;background:#0d121f;color:var(--neon-cyan);">♪</div>`}
+          ${t.artworkUrl && safeUrl(t.artworkUrl) ? `<img src="${safeUrl(t.artworkUrl)}" alt="Cover" loading="lazy">` : `<div class="artwork-fallback" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:2.2rem;background:#0d121f;color:var(--neon-cyan);">♪</div>`}
           <button class="card-play-btn" title="Слушать">
             <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 18 12 6 20 6 4"></polygon></svg>
           </button>
@@ -1509,7 +1886,7 @@
           item.className = 'stats-item-row';
           item.innerHTML = `
             <div class="stats-rank">#${i + 1}</div>
-            <img class="stats-thumb" src="${t.artworkUrl || ''}" alt="Cover" loading="lazy">
+            <img class="stats-thumb" src="${safeUrl(t.artworkUrl)}" alt="Cover" loading="lazy">
             <div class="stats-item-info">
               <div class="stats-item-title" title="${esc(t.title)}">${esc(t.title)}</div>
               <div class="stats-item-artist">${esc(t.artist)}</div>
@@ -1536,7 +1913,7 @@
           item.className = 'stats-item-row';
           item.innerHTML = `
             <div class="stats-rank">#${i + 1}</div>
-            <img class="stats-thumb stats-thumb-artist" src="${a.avatarUrl || ''}" alt="Artist" loading="lazy">
+            <img class="stats-thumb stats-thumb-artist" src="${safeUrl(a.avatarUrl)}" alt="Artist" loading="lazy">
             <div class="stats-item-info">
               <div class="stats-item-title">${esc(a.name)}</div>
               <div class="stats-item-artist">Исполнитель</div>
@@ -1587,13 +1964,13 @@
       card.className = 'album-card';
       card.innerHTML = `
         <div class="album-artwork-box">
-          <img src="${alb.artworkUrl || ''}" alt="Cover" loading="lazy">
+          <img src="${safeUrl(alb.artworkUrl)}" alt="Cover" loading="lazy">
           <button class="album-play-btn" title="Слушать релиз">
             <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 18 12 6 20 6 4"></polygon></svg>
           </button>
         </div>
         <div class="album-info">
-          <div class="album-title" title="${alb.title}">${alb.title}</div>
+          <div class="album-title" title="${esc(alb.title)}">${esc(alb.title)}</div>
           <div class="album-meta-row">
             <span>${alb.releaseYear || (isPlaylist ? 'Плейлист' : 'Альбом')}</span>
             <span>${alb.trackCount} треков</span>
@@ -1698,15 +2075,15 @@
       }
 
       // Banner
-      if (artist.bannerUrl) {
-        artistBanner.style.backgroundImage = `url("${artist.bannerUrl}")`;
+      if (artist.bannerUrl && safeUrl(artist.bannerUrl)) {
+        artistBanner.style.backgroundImage = `url("${safeUrl(artist.bannerUrl)}")`;
       } else {
         artistBanner.style.backgroundImage = 'linear-gradient(135deg, #181922 0%, #13141b 100%)';
       }
 
       // Avatar
-      if (artist.avatarUrl) {
-        artistAvatarImg.src = artist.avatarUrl;
+      if (artist.avatarUrl && safeUrl(artist.avatarUrl)) {
+        artistAvatarImg.src = safeUrl(artist.avatarUrl);
         artistAvatarImg.style.display = 'block';
         artistAvatarFallback.style.display = 'none';
       } else {
@@ -1884,6 +2261,18 @@
   searchClearBtn.addEventListener('click', () => {
     searchInput.value = '';
     searchClearBtn.style.display = 'none';
+    currentSearchQuery = '';
+    currentSearchResults = [];
+    currentSearchHasMore = false;
+    currentSearchOffset = 0;
+    if (searchMoreContainer) searchMoreContainer.style.display = 'none';
+    if (navHistory[navHistoryIndex] === 'search') {
+      viewTitle.textContent = 'Поиск треков';
+      resultsCount.textContent = '';
+      searchInitialState.style.display = 'flex';
+      tracksList.style.display = 'none';
+      tracksList.innerHTML = '';
+    }
     searchInput.focus();
   });
 
@@ -1916,13 +2305,19 @@
     const isFav = favorites.some(f => f.id === t.id);
     const isCurrent = currentTrack && currentTrack.id === t.id;
     const isLocal = t.source === 'local';
+    const isDownloaded = !isLocal && isTrackDownloaded(t);
 
     const row = document.createElement('div');
     row.className = `track-row ${isCurrent ? 'playing' : ''}`;
     row.dataset.id = t.id;
 
-    const sourceLabel = isLocal ? 'LOCAL' : (t.source === 'soundcloud' ? 'SC' : 'YT');
-    const badgeClass = isLocal ? 'row-source-badge badge-local' : 'row-source-badge';
+    let sourceLabel = isLocal ? 'LOCAL' : (t.source === 'soundcloud' ? 'SC' : 'YT');
+    let badgeClass = isLocal ? 'row-source-badge badge-local' : 'row-source-badge';
+
+    if (isDownloaded) {
+      sourceLabel = 'СКАЧАН';
+      badgeClass = 'row-source-badge badge-downloaded';
+    }
 
     row.innerHTML = `
       <div class="row-index">
@@ -1933,7 +2328,7 @@
         ` : (idx + 1)}
       </div>
       <div class="row-artwork">
-        ${t.artworkUrl ? `<img src="${t.artworkUrl}" alt="cover" loading="lazy">` : `<div class="row-artwork-fallback">♪</div>`}
+        ${t.artworkUrl && safeUrl(t.artworkUrl) ? `<img src="${safeUrl(t.artworkUrl)}" alt="cover" loading="lazy">` : `<div class="row-artwork-fallback">♪</div>`}
         <div class="row-play-overlay">
           <svg viewBox="0 0 24 24"><polygon points="6 4 18 12 6 20 6 4"></polygon></svg>
         </div>
@@ -1980,12 +2375,18 @@
             </svg>
           </button>
         ` : `
-          <button class="btn-icon-action btn-download" title="Скачать MP3">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="7 10 12 15 17 10"></polyline>
-              <line x1="12" y1="15" x2="12" y2="3"></line>
-            </svg>
+          <button class="btn-icon-action btn-download ${isDownloaded ? 'downloaded' : ''}" title="${isDownloaded ? 'Скачан на диск (играет без сети)' : 'Скачать MP3'}">
+            ${isDownloaded ? `
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+            ` : `
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+            `}
           </button>
         `}
       </div>
@@ -2054,7 +2455,11 @@
     if (downloadBtn) {
       downloadBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        triggerDownload(t);
+        if (isTrackDownloaded(t) && !e.shiftKey) {
+          showToast(`Трек сохранен на диске (Downloads/SC-Player)`);
+          return;
+        }
+        triggerDownload(t, row, downloadBtn);
       });
     }
 
@@ -2117,7 +2522,7 @@
       collage.className = 'playlist-cover-collage';
       uniqueArtworks.slice(0, 4).forEach(url => {
         const img = document.createElement('img');
-        img.src = url;
+        img.src = safeUrl(url);
         img.alt = 'cover';
         img.loading = 'lazy';
         collage.appendChild(img);
@@ -2126,7 +2531,7 @@
     } else if (uniqueArtworks.length > 0) {
       const img = document.createElement('img');
       img.className = 'playlist-cover-single';
-      img.src = uniqueArtworks[0];
+      img.src = safeUrl(uniqueArtworks[0]);
       img.alt = 'cover';
       img.loading = 'lazy';
       wrapper.appendChild(img);
@@ -2263,8 +2668,8 @@
     pickerCurrentTrack = track;
 
     if (pickerTrackArt) {
-      pickerTrackArt.innerHTML = track.artworkUrl 
-        ? `<img src="${track.artworkUrl}" alt="art" />`
+      pickerTrackArt.innerHTML = (track.artworkUrl && safeUrl(track.artworkUrl))
+        ? `<img src="${safeUrl(track.artworkUrl)}" alt="art" />`
         : '♪';
     }
     if (pickerTrackTitle) pickerTrackTitle.textContent = track.title || 'Untitled';
@@ -2303,8 +2708,9 @@
       item.className = `picker-playlist-item ${isSelected ? 'selected' : ''}`;
 
       const firstArt = (pl.tracks || []).find(t => t.artworkUrl)?.artworkUrl;
-      const coverHtml = firstArt 
-        ? `<img src="${firstArt}" alt="art" />` 
+      const validArt = firstArt ? safeUrl(firstArt) : '';
+      const coverHtml = validArt 
+        ? `<img src="${validArt}" alt="art" />` 
         : `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>`;
 
       item.innerHTML = `
@@ -2565,6 +2971,14 @@
 
     try {
       const resolved = await window.api.resolveStream(track);
+      if (resolved.isLocal) {
+        track._isDownloaded = true;
+        track._localPath = resolved.localPath;
+        const key = normalizeTrackKey(track.artist, track.title);
+        downloadedKeys.add(key);
+        updateTrackRowsDownloadedState(track);
+        updatePlayerMeta(track);
+      }
 
       if (hlsInstance) {
         hlsInstance.destroy();
@@ -2631,18 +3045,41 @@
     playerTitle.textContent = track.title;
     playerArtist.textContent = track.artist;
 
+    const isDl = isTrackDownloaded(track) || track._isDownloaded;
+
     if (hudAudioRate) {
       const rateKHz = audioCtx?.sampleRate ? (audioCtx.sampleRate / 1000).toFixed(1) : '48.0';
-      const srcTag = track.source === 'local' ? 'LOCAL' : (track.source === 'youtube' ? 'OPUS' : 'AAC');
+      const srcTag = (track.source === 'local' || isDl) ? 'LOCAL' : (track.source === 'youtube' ? 'OPUS' : 'AAC');
       hudAudioRate.textContent = `${rateKHz} kHz | ${srcTag}`;
     }
 
-    if (track.artworkUrl) {
-      playerArtwork.src = track.artworkUrl;
+    if (btnDownloadCurrent) {
+      btnDownloadCurrent.classList.toggle('downloaded', isDl);
+      btnDownloadCurrent.title = isDl ? 'Скачан на диск (играет локально)' : 'Скачать MP3';
+      if (isDl) {
+        btnDownloadCurrent.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        `;
+      } else {
+        btnDownloadCurrent.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+        `;
+      }
+    }
+
+    const validArtwork = safeUrl(track.artworkUrl);
+    if (validArtwork) {
+      playerArtwork.src = validArtwork;
       playerArtwork.style.display = 'block';
       playerArtworkFallback.style.display = 'none';
       if (lyricsBackdrop) {
-        lyricsBackdrop.style.backgroundImage = `url("${track.artworkUrl}")`;
+        lyricsBackdrop.style.backgroundImage = `url("${validArtwork}")`;
       }
     } else {
       playerArtwork.style.display = 'none';
@@ -2658,7 +3095,7 @@
     // Update Focus Stage Elements
     if (focusTrackTitle) focusTrackTitle.textContent = track.title;
     if (focusTrackArtist) focusTrackArtist.textContent = track.artist;
-    if (focusTagSource) focusTagSource.textContent = (track.source || 'AUDIO').toUpperCase();
+    if (focusTagSource) focusTagSource.textContent = (track.source === 'local' || isDl) ? 'LOCAL' : (track.source || 'AUDIO').toUpperCase();
     if (focusTagRate && hudAudioRate) focusTagRate.textContent = hudAudioRate.textContent;
     if (focusTagDuration) {
       focusTagDuration.textContent = formatTime(audio.duration || (track.durationMs / 1000));
@@ -2668,7 +3105,8 @@
       focusLikeBtn.querySelector('svg')?.setAttribute('fill', isFav ? 'currentColor' : 'none');
     }
 
-    const stageArt = track.artworkUrl || track.remoteArtworkUrl || '';
+    const rawStageArt = track.artworkUrl || track.remoteArtworkUrl || '';
+    const stageArt = safeUrl(rawStageArt);
     if (stageArt) {
       if (focusArtworkImg) {
         focusArtworkImg.src = stageArt;
@@ -2825,6 +3263,7 @@
     iconPause.style.display = 'block';
     highlightPlayingRow();
     if (focusArtCard) focusArtCard.classList.add('playing');
+    applyDspConfig();
     syncDiscordPresence(true);
   });
 
@@ -2853,6 +3292,7 @@
   });
 
   audio.addEventListener('loadedmetadata', () => {
+    applyDspConfig();
     if (audio.duration && Number.isFinite(audio.duration)) {
       totalDurationEl.textContent = formatTime(audio.duration);
       if (currentTrack && currentTrack.source === 'local') {
@@ -3278,24 +3718,160 @@
     canvas.style.display = isVisualizerActive ? 'block' : 'none';
   });
 
+  // Audio Lab (Slowed, Speed Up & Reverb FX) Controls
+  btnRemixLab?.addEventListener('click', () => {
+    initWebAudio();
+    updateRemixLabUI();
+    remixLabModal.style.display = 'flex';
+  });
+
+  btnCloseRemixLab?.addEventListener('click', () => {
+    remixLabModal.style.display = 'none';
+  });
+
+  remixLabModal?.addEventListener('click', (e) => {
+    if (e.target === remixLabModal) remixLabModal.style.display = 'none';
+  });
+
+  // Preset buttons
+  document.querySelectorAll('.remix-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const pKey = btn.dataset.preset;
+      const preset = REMIX_PRESETS[pKey];
+      if (!preset) return;
+      Object.assign(dspConfig, preset);
+      updateReverbImpulse(dspConfig.reverbDecay);
+      applyDspConfig();
+      saveDspConfig();
+      showToast(`Audio Lab: пресет ${btn.querySelector('.preset-name')?.textContent || pKey.toUpperCase()}`);
+    });
+  });
+
+  // Speed slider
+  sliderRemixSpeed?.addEventListener('input', (e) => {
+    dspConfig.speed = parseFloat(e.target.value) || 1.0;
+    dspConfig.preset = 'custom';
+    applyDspConfig();
+    saveDspConfig();
+  });
+
+  // Quick markers for speed
+  document.querySelectorAll('.remix-quick-markers span').forEach(el => {
+    el.addEventListener('click', () => {
+      const val = parseFloat(el.dataset.val);
+      if (!isNaN(val)) {
+        dspConfig.speed = val;
+        dspConfig.preset = 'custom';
+        applyDspConfig();
+        saveDspConfig();
+      }
+    });
+  });
+
+  // Pitch mode toggle
+  btnPitchVinyl?.addEventListener('click', () => {
+    dspConfig.vinylPitch = true;
+    dspConfig.preset = 'custom';
+    applyDspConfig();
+    saveDspConfig();
+  });
+
+  btnPitchLock?.addEventListener('click', () => {
+    dspConfig.vinylPitch = false;
+    dspConfig.preset = 'custom';
+    applyDspConfig();
+    saveDspConfig();
+  });
+
+  // Reverb Wet slider
+  sliderRemixReverb?.addEventListener('input', (e) => {
+    dspConfig.reverbWet = parseFloat(e.target.value) || 0;
+    dspConfig.preset = 'custom';
+    applyDspConfig();
+    saveDspConfig();
+  });
+
+  // Reverb Decay slider
+  sliderRemixDecay?.addEventListener('input', (e) => {
+    const decay = parseFloat(e.target.value) || 2.6;
+    dspConfig.reverbDecay = decay;
+    dspConfig.preset = 'custom';
+    valRemixDecay.textContent = decay.toFixed(1) + 's';
+    fillRemixDecay.style.width = ((decay - 1.0) / 4.0 * 100) + '%';
+  });
+
+  sliderRemixDecay?.addEventListener('change', () => {
+    updateReverbImpulse(dspConfig.reverbDecay);
+    applyDspConfig();
+    saveDspConfig();
+  });
+
+  // Bass Boost slider
+  sliderRemixBass?.addEventListener('input', (e) => {
+    dspConfig.bassBoost = parseFloat(e.target.value) || 0;
+    dspConfig.preset = 'custom';
+    applyDspConfig();
+    saveDspConfig();
+  });
+
+  // Treble slider
+  sliderRemixTreble?.addEventListener('input', (e) => {
+    dspConfig.treble = parseFloat(e.target.value) || 0;
+    dspConfig.preset = 'custom';
+    applyDspConfig();
+    saveDspConfig();
+  });
+
+  // Reset button
+  btnResetRemixLab?.addEventListener('click', () => {
+    Object.assign(dspConfig, REMIX_PRESETS.normal);
+    updateReverbImpulse(dspConfig.reverbDecay);
+    applyDspConfig();
+    saveDspConfig();
+    showToast('Audio Lab: настройки сброшены в дефолт');
+  });
+
   // Downloads
-  async function triggerDownload(track) {
+  async function triggerDownload(track, rowElement = null, btnElement = null) {
+    if (!track) return;
     showToast(`Загрузка на диск: ${track.title}...`);
+    if (btnElement) {
+      btnElement.classList.add('loading');
+    }
     try {
       const res = await window.api.downloadTrack(track);
       if (res.success) {
+        track._isDownloaded = true;
+        const key = normalizeTrackKey(track.artist, track.title);
+        downloadedKeys.add(key);
         showToast(`Сохранено: ${track.artist} - ${track.title}`);
+
+        updateTrackRowsDownloadedState(track);
+        if (currentTrack && (currentTrack.id === track.id || normalizeTrackKey(currentTrack.artist, currentTrack.title) === key)) {
+          updatePlayerMeta(currentTrack);
+        }
       } else {
         showToast(`Ошибка: ${res.message || 'Не удалось скачать'}`);
       }
     } catch (err) {
       showToast(`Ошибка скачивания: ${err.message}`);
+    } finally {
+      if (btnElement) {
+        btnElement.classList.remove('loading');
+      }
     }
   }
 
   btnDownloadCurrent.addEventListener('click', () => {
-    if (currentTrack) triggerDownload(currentTrack);
-    else showToast('Нет играющего трека');
+    if (currentTrack) {
+      if (isTrackDownloaded(currentTrack) || currentTrack._isDownloaded) {
+        showToast('Трек уже сохранен на диске (Downloads/SC-Player)');
+        return;
+      }
+      triggerDownload(currentTrack, null, btnDownloadCurrent);
+    } else {
+      showToast('Нет играющего трека');
+    }
   });
 
   // Discord Rich Presence Sync
@@ -3438,8 +4014,16 @@
   });
 
   // Init
-  updateBadgeCounts();
-  renderHomeView();
+  refreshDownloadedMap().then(() => {
+    updateBadgeCounts();
+    renderHomeView();
+    if (currentTrack) updatePlayerMeta(currentTrack);
+  });
+  window.addEventListener('focus', () => {
+    refreshDownloadedMap().then(() => {
+      if (currentTrack) updatePlayerMeta(currentTrack);
+    });
+  });
 
   // Restore Last Session Track Meta
   if (lastSession && lastSession.track) {
@@ -3462,6 +4046,9 @@
       seekFill.style.width = `${prog}%`;
     }
   }
+
+  // Initial Audio Lab State
+  updateRemixLabUI();
 
   // Check yt-dlp binary availability
   if (window.api && window.api.isYtDlpAvailable) {

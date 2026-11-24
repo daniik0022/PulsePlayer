@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' https: data: blob: file: pulse-audio:; media-src 'self' https: blob: file: pulse-audio:; connect-src 'self' https: http: pulse-audio:;">
   <title>Pulse Player - Cyberpunk Hi-Tech Edition</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -689,6 +690,13 @@
         </svg>
       </button>
 
+      <button id="btnRemixLab" class="btn-tool" title="Audio Lab: Slowed, Speed Up & Reverb FX">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+        </svg>
+        <span class="remix-active-badge" id="remixActiveBadge" style="display:none;">FX</span>
+      </button>
+
       <button id="btnDiscord" class="btn-tool active" title="Discord Rich Presence (включен)">
         <svg viewBox="0 0 24 24" fill="currentColor">
           <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.894.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
@@ -792,6 +800,149 @@
       <div class="cyber-modal-actions">
         <button class="btn-modal-secondary" id="btnCancelPlaylistNameModal">Отмена</button>
         <button class="btn-modal-primary" id="btnSubmitPlaylistNameModal">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Audio Lab (Slowed, Speed Up & Reverb FX) -->
+  <div class="cyber-modal-overlay" id="remixLabModal" style="display:none;">
+    <div class="cyber-modal-card remix-lab-card">
+      <div class="cyber-modal-header">
+        <div class="modal-title-row">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+          </svg>
+          <span>AUDIO LAB // REMIX &amp; DSP ENGINE</span>
+        </div>
+        <button class="btn-modal-close" id="btnCloseRemixLab">&times;</button>
+      </div>
+
+      <div class="cyber-modal-body remix-lab-body">
+        <!-- Preset Selector Pills -->
+        <div class="remix-section-label">БЫСТРЫЕ ПРЕСЕТЫ</div>
+        <div class="remix-presets-grid">
+          <button class="remix-preset-btn active" data-preset="normal">
+            <span class="preset-name">NORMAL</span>
+            <span class="preset-desc">1.0x / Обычный</span>
+          </button>
+          <button class="remix-preset-btn" data-preset="slowed">
+            <span class="preset-name">SLOWED + REVERB</span>
+            <span class="preset-desc">0.83x / Винил / Космос</span>
+          </button>
+          <button class="remix-preset-btn" data-preset="nightcore">
+            <span class="preset-name">SPEED UP</span>
+            <span class="preset-desc">1.25x / Nightcore</span>
+          </button>
+          <button class="remix-preset-btn" data-preset="chopped">
+            <span class="preset-name">CHOPPED &amp; SLOW</span>
+            <span class="preset-desc">0.76x / Глубокий бас</span>
+          </button>
+          <button class="remix-preset-btn" data-preset="space">
+            <span class="preset-name">SPACE DRIFT</span>
+            <span class="preset-desc">0.88x / Собор / Эфир</span>
+          </button>
+          <button class="remix-preset-btn" data-preset="clean">
+            <span class="preset-name">CLEAN SPEED</span>
+            <span class="preset-desc">1.15x / Тон зафиксирован</span>
+          </button>
+        </div>
+
+        <!-- Fine tuning controls -->
+        <div class="remix-section-label" style="margin-top: 6px;">ТОЧНАЯ КАСТОМИЗАЦИЯ ЗВУКА</div>
+        <div class="remix-controls-grid">
+          <!-- Speed slider -->
+          <div class="remix-control-item">
+            <div class="control-header">
+              <span class="control-label">СКОРОСТЬ ВОСПРОИЗВЕДЕНИЯ</span>
+              <span class="control-val" id="valRemixSpeed">1.00x</span>
+            </div>
+            <div class="remix-slider-wrap">
+              <input type="range" id="sliderRemixSpeed" min="0.5" max="1.75" step="0.01" value="1.0">
+              <div class="remix-slider-fill" id="fillRemixSpeed" style="width: 40%;"></div>
+            </div>
+            <div class="remix-quick-markers">
+              <span data-val="0.75">0.75x</span>
+              <span data-val="0.83">0.83x</span>
+              <span data-val="1.00">1.00x</span>
+              <span data-val="1.15">1.15x</span>
+              <span data-val="1.25">1.25x</span>
+              <span data-val="1.50">1.50x</span>
+            </div>
+          </div>
+
+          <!-- Pitch Mode toggle -->
+          <div class="remix-control-item">
+            <div class="control-header">
+              <span class="control-label">РЕЖИМ ТОНАЛЬНОСТИ (PITCH)</span>
+            </div>
+            <div class="pitch-mode-toggle-group">
+              <button class="btn-pitch-mode active" id="btnPitchVinyl" title="Питч меняется органично вместе со скоростью (эффект винила/кассеты)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>
+                ВИНИЛОВЫЙ ПИТЧ
+              </button>
+              <button class="btn-pitch-mode" id="btnPitchLock" title="Сохранять исходную тональность при любой скорости">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                ФИКСИРОВАТЬ КЛЮЧ
+              </button>
+            </div>
+          </div>
+
+          <!-- Reverb Wet slider -->
+          <div class="remix-control-item">
+            <div class="control-header">
+              <span class="control-label">ПРОСТРАНСТВО / РЕВЕРБЕРАЦИЯ</span>
+              <span class="control-val" id="valRemixReverb">0%</span>
+            </div>
+            <div class="remix-slider-wrap">
+              <input type="range" id="sliderRemixReverb" min="0" max="1" step="0.01" value="0">
+              <div class="remix-slider-fill" id="fillRemixReverb" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <!-- Reverb Decay / Room Size -->
+          <div class="remix-control-item">
+            <div class="control-header">
+              <span class="control-label">РАЗМЕР ПРОСТРАНСТВА (ХВОСТ ЗАТУХАНИЯ)</span>
+              <span class="control-val" id="valRemixDecay">2.6s</span>
+            </div>
+            <div class="remix-slider-wrap">
+              <input type="range" id="sliderRemixDecay" min="1.0" max="5.0" step="0.1" value="2.6">
+              <div class="remix-slider-fill" id="fillRemixDecay" style="width: 40%;"></div>
+            </div>
+          </div>
+
+          <!-- Bass Boost -->
+          <div class="remix-control-item">
+            <div class="control-header">
+              <span class="control-label">ГЛУБОКИЙ БАС (BASS BOOST)</span>
+              <span class="control-val" id="valRemixBass">0.0 dB</span>
+            </div>
+            <div class="remix-slider-wrap">
+              <input type="range" id="sliderRemixBass" min="-4" max="10" step="0.5" value="0">
+              <div class="remix-slider-fill" id="fillRemixBass" style="width: 28.5%;"></div>
+            </div>
+          </div>
+
+          <!-- Treble -->
+          <div class="remix-control-item">
+            <div class="control-header">
+              <span class="control-label">ВЫСОКИЕ ЧАСТОТЫ (TREBLE)</span>
+              <span class="control-val" id="valRemixTreble">0.0 dB</span>
+            </div>
+            <div class="remix-slider-wrap">
+              <input type="range" id="sliderRemixTreble" min="-6" max="6" step="0.5" value="0">
+              <div class="remix-slider-fill" id="fillRemixTreble" style="width: 50%;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="remix-engine-footer">
+          <div class="engine-status-tag">
+            <span class="status-pulse-dot"></span>
+            <span>32-BIT FLOAT DSP // DYNAMICS LIMITER ACTIVE</span>
+          </div>
+          <button class="btn-remix-reset" id="btnResetRemixLab">СБРОС В ДЕФОЛТ</button>
+        </div>
       </div>
     </div>
   </div>
